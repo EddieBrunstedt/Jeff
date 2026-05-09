@@ -7,10 +7,14 @@ use tracing::{error, info};
 mod commands;
 mod config;
 mod context;
+mod db;
+mod opencritic;
+mod poller;
 mod tracing;
 
 use config::Config;
 use context::Data;
+use opencritic::OpenCriticClient;
 
 #[tokio::main]
 async fn main() {
@@ -34,7 +38,13 @@ async fn run_bot(config: Config) -> Result<()> {
 
         poise::Framework::builder()
             .options(poise::FrameworkOptions {
-                commands: vec![commands::healthcheck::healthcheck()],
+                commands: vec![
+                    commands::healthcheck::healthcheck(),
+                    commands::opencritic::check_opencritic(),
+                    commands::opencritic::opencritic_status(),
+                    commands::opencritic::opencritic_subscribe(),
+                    commands::opencritic::opencritic_unsubscribe(),
+                ],
                 ..Default::default()
             })
             .setup(move |ctx, _ready, framework| {
@@ -62,9 +72,9 @@ async fn run_bot(config: Config) -> Result<()> {
 async fn initialize_bot_data(
     ctx: &serenity::Context,
     framework: &poise::Framework<Data, context::Error>,
-    _config: Arc<Config>,
+    config: Arc<Config>,
 ) -> Result<Data> {
-    if let Some(guild_id) = _config.guild_id {
+    if let Some(guild_id) = config.guild_id {
         poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id)
             .await
             .context("Failed to register commands in guild")?;
@@ -76,7 +86,22 @@ async fn initialize_bot_data(
         );
     }
 
+    let db = db::connect_and_migrate(&config.database_url).await?;
+    let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
+
+    poller::spawn_opencritic_background_poll(
+        Arc::clone(&ctx.http),
+        db.clone(),
+        opencritic_client.clone(),
+        Arc::clone(&config),
+    );
+    info!("Started OpenCritic background poller");
+
     info!("Bot initialization complete");
 
-    Ok(Data { _config })
+    Ok(Data {
+        config,
+        db,
+        opencritic_client,
+    })
 }
