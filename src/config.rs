@@ -5,7 +5,6 @@ use poise::serenity_prelude as serenity;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub _discord_character_limit: usize,
     pub discord_token: String,
     pub guild_id: Option<serenity::GuildId>,
     pub pretty_log: bool,
@@ -19,13 +18,6 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let _discord_character_limit: usize = std::env::var("DISCORD_CHARACTER_LIMIT")
-            .ok()
-            .as_deref()
-            .unwrap_or("2000")
-            .parse()
-            .context("DISCORD_CHARACTER_LIMIT must be a valid positive integer")?;
-
         let discord_token = get_required_env_var("DISCORD_TOKEN")?;
 
         let guild_id = std::env::var("GUILD_ID")
@@ -73,7 +65,6 @@ impl Config {
                 .context("OPENCRITIC_POLL_INTERVAL_SECONDS must be a valid integer")?;
 
         Ok(Config {
-            _discord_character_limit,
             discord_token,
             guild_id,
             pretty_log,
