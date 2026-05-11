@@ -74,14 +74,15 @@ pub async fn run_opencritic_poll(
     let channel_id = match subscription.channel_id.parse::<u64>() {
         Ok(id) => serenity::ChannelId::new(id),
         Err(err) => {
-            error!(
+            warn!(
                 channel = %subscription.channel_id,
                 error = %err,
-                "Invalid subscribed channel ID; aborting poll"
+                "Subscribed channel ID does not parse as u64; auto-unsubscribing"
             );
+            delete_opencritic_subscription(pool).await?;
             return Ok(PollOutcome {
                 scanned_games: scan.games.len(),
-                subscribed: true,
+                subscribed: false,
                 messages_sent: 0,
                 already_decided: 0,
                 pages_requested: scan.pages_requested,
