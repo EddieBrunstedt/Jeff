@@ -162,6 +162,48 @@ pub async fn run_opencritic_poll(
     })
 }
 
+#[derive(Debug)]
+pub struct RebaselineOutcome {
+    pub newly_suppressed: usize,
+    pub already_decided: usize,
+    pub pages_requested: usize,
+    pub rate_limit_remaining: Option<String>,
+}
+
+pub async fn rebaseline_for_first_subscriber(
+    pool: &SqlitePool,
+    client: &OpenCriticClient,
+    config: &Config,
+) -> Result<RebaselineOutcome> {
+    let years = scan_years(config);
+    let scan = client
+        .scan_years(
+            &years,
+            config.opencritic_threshold,
+            config.opencritic_min_reviews,
+        )
+        .await?;
+    let now = Utc::now().to_rfc3339();
+    let mut newly_suppressed = 0;
+    let mut already_decided = 0;
+
+    for game in &scan.games {
+        if opencritic_decision_exists(pool, game.id).await? {
+            already_decided += 1;
+            continue;
+        }
+        insert_opencritic_decision(pool, game, DecisionStatus::BaselineSuppressed, &now).await?;
+        newly_suppressed += 1;
+    }
+
+    Ok(RebaselineOutcome {
+        newly_suppressed,
+        already_decided,
+        pages_requested: scan.pages_requested,
+        rate_limit_remaining: scan.rate_limit_remaining,
+    })
+}
+
 pub fn format_opencritic_announcement(game: &OpenCriticGame) -> String {
     let rounded_score = game.top_critic_score.round() as i64;
     let recommended = if game.percent_recommended >= 0.0 {

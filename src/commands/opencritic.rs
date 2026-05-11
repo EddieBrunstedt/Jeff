@@ -4,9 +4,10 @@ use chrono::Utc;
 use crate::{
     context::Context,
     db::{
-        count_opencritic_decisions, delete_opencritic_subscription, upsert_opencritic_subscription,
+        count_opencritic_decisions, delete_opencritic_subscription, is_opencritic_baseline_complete,
+        list_opencritic_subscriptions, upsert_opencritic_subscription,
     },
-    poller::{PollMode, run_opencritic_poll},
+    poller::{PollMode, rebaseline_for_first_subscriber, run_opencritic_poll},
 };
 
 #[poise::command(slash_command, prefix_command, rename = "opencritic_subscribe")]
@@ -17,9 +18,25 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     let channel_id = ctx.channel_id();
     let created_by = ctx.author().id.to_string();
     let created_at = Utc::now().to_rfc3339();
+    let data = ctx.data();
+
+    let existing = list_opencritic_subscriptions(&data.db).await?;
+    let baseline_complete = is_opencritic_baseline_complete(&data.db).await?;
+    let is_first_subscriber = existing.is_empty();
+    let needs_rebaseline = is_first_subscriber && baseline_complete;
+
+    if needs_rebaseline {
+        ctx.defer().await?;
+    }
+
+    let rebaseline = if needs_rebaseline {
+        Some(rebaseline_for_first_subscriber(&data.db, &data.opencritic_client, &data.config).await?)
+    } else {
+        None
+    };
 
     upsert_opencritic_subscription(
-        &ctx.data().db,
+        &data.db,
         &guild_id.to_string(),
         &channel_id.to_string(),
         &created_by,
@@ -27,8 +44,28 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     )
     .await?;
 
-    ctx.say("OpenCritic alerts enabled in this channel.")
-        .await?;
+    let reply = match (is_first_subscriber, baseline_complete) {
+        (false, _) => "OpenCritic alerts enabled in this channel.".to_string(),
+        (true, false) => "OpenCritic alerts enabled. The initial baseline poll has not run yet; \
+            once it does, currently-qualifying games will be suppressed and only new threshold \
+            crossings will be posted here."
+            .to_string(),
+        (true, true) => {
+            let outcome = rebaseline.expect("rebaseline runs when first subscriber + baseline complete");
+            let rate_limit = outcome.rate_limit_remaining.as_deref().unwrap_or("unknown");
+            format!(
+                "OpenCritic alerts enabled. Snapshotted {} currently-qualifying games as \
+                baseline ({} already in the ledger). Only new threshold crossings will be \
+                posted here.\nPages requested: {}\nRapidAPI requests remaining: {}",
+                outcome.newly_suppressed,
+                outcome.already_decided,
+                outcome.pages_requested,
+                rate_limit,
+            )
+        }
+    };
+
+    ctx.say(reply).await?;
 
     Ok(())
 }
