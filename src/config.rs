@@ -6,7 +6,7 @@ use poise::serenity_prelude as serenity;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub discord_token: String,
-    pub guild_id: Option<serenity::GuildId>,
+    pub guild_id: serenity::GuildId,
     pub pretty_log: bool,
     pub rapidapi_key: String,
     pub database_url: String,
@@ -17,14 +17,10 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         let discord_token = get_required_env_var("DISCORD_TOKEN")?;
 
-        let guild_id = std::env::var("GUILD_ID")
-            .ok()
-            .map(|s| {
-                s.parse::<u64>()
-                    .map(serenity::GuildId::new)
-                    .context("GUILD_ID must be a valid Discord guild ID")
-            })
-            .transpose()?;
+        let guild_id = get_required_env_var("GUILD_ID")?
+            .parse::<u64>()
+            .map(serenity::GuildId::new)
+            .context("GUILD_ID must be a valid Discord guild ID")?;
 
         let pretty_log = std::env::var("PRETTY_LOG")
             .unwrap_or("false".to_string())

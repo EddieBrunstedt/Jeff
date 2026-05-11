@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use poise::serenity_prelude as serenity;
 use tracing::{error, info};
@@ -40,13 +40,7 @@ async fn run_bot(config: Config) -> Result<()> {
 
         poise::Framework::builder()
             .options(poise::FrameworkOptions {
-                commands: vec![
-                    commands::healthcheck::healthcheck(),
-                    commands::opencritic::opencritic_set_threshold(),
-                    commands::opencritic::opencritic_status(),
-                    commands::opencritic::opencritic_subscribe(),
-                    commands::opencritic::opencritic_unsubscribe(),
-                ],
+                commands: vec![commands::jeff::jeff()],
                 ..Default::default()
             })
             .setup(move |ctx, _ready, framework| {
@@ -76,17 +70,10 @@ async fn initialize_bot_data(
     framework: &poise::Framework<Data, context::Error>,
     config: Arc<Config>,
 ) -> Result<Data> {
-    if let Some(guild_id) = config.guild_id {
-        poise::builtins::register_in_guild(ctx, &framework.options().commands, guild_id)
-            .await
-            .context("Failed to register commands in guild")?;
-
-        info!("Registered commands in guild {guild_id}");
-    } else {
-        bail!(
-            "GUILD_ID is not configured; reached the global command registration path, but global registration is intentionally disabled for now"
-        );
-    }
+    poise::builtins::register_in_guild(ctx, &framework.options().commands, config.guild_id)
+        .await
+        .context("Failed to register commands in guild")?;
+    info!("Registered commands in guild {}", config.guild_id);
 
     let db = db::connect_and_migrate(&config.database_url).await?;
     let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
