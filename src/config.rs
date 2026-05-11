@@ -36,10 +36,7 @@ impl Config {
             .unwrap_or_else(|_| "sqlite://jeff.sqlite?mode=rwc".to_string());
 
         let opencritic_poll_interval_seconds: u64 =
-            std::env::var("OPENCRITIC_POLL_INTERVAL_SECONDS")
-                .ok()
-                .as_deref()
-                .unwrap_or("21600")
+            get_required_env_var("OPENCRITIC_POLL_INTERVAL_SECONDS")?
                 .parse()
                 .context("OPENCRITIC_POLL_INTERVAL_SECONDS must be a valid integer")?;
 
