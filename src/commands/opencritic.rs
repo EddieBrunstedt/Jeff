@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 
 use crate::{
@@ -76,7 +76,7 @@ pub async fn check_opencritic(
     } else if outcome.baseline_completed_before_run {
         "already complete"
     } else {
-        bail!("OpenCritic baseline is unexpectedly incomplete after poll")
+        unreachable!("OpenCritic baseline is unexpectedly incomplete after poll")
     };
     let rate_limit = outcome.rate_limit_remaining.as_deref().unwrap_or("unknown");
 
