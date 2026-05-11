@@ -20,13 +20,13 @@ use crate::{
     opencritic::{OpenCriticClient, OpenCriticGame},
 };
 
-const DISCORD_UNKNOWN_CHANNEL: isize = 10003;
+const DISCORD_UNKNOWN_CHANNEL_ERROR_CODE: isize = 10003;
 
 fn is_channel_gone_error(err: &serenity::Error) -> bool {
     matches!(
         err,
         serenity::Error::Http(HttpError::UnsuccessfulRequest(resp))
-            if resp.error.code == DISCORD_UNKNOWN_CHANNEL
+            if resp.error.code == DISCORD_UNKNOWN_CHANNEL_ERROR_CODE
     )
 }
 
