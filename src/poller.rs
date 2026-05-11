@@ -61,15 +61,8 @@ pub async fn run_opencritic_poll(
         let mut baseline_suppressed = 0;
 
         for game in &scan.games {
-            insert_opencritic_decision(
-                pool,
-                game,
-                DecisionStatus::BaselineSuppressed,
-                &now,
-                None,
-                None,
-            )
-            .await?;
+            insert_opencritic_decision(pool, game, DecisionStatus::BaselineSuppressed, &now)
+                .await?;
             baseline_suppressed += 1;
         }
 
@@ -147,8 +140,7 @@ pub async fn run_opencritic_poll(
                     messages_sent += 1;
                 }
 
-                insert_opencritic_decision(pool, game, DecisionStatus::Announced, &now, None, None)
-                    .await?;
+                insert_opencritic_decision(pool, game, DecisionStatus::Announced, &now).await?;
                 handled_games += 1;
             }
         }

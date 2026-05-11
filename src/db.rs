@@ -44,9 +44,7 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
           score REAL NOT NULL,
           review_count INTEGER NOT NULL,
           percent_recommended REAL,
-          decided_at TEXT NOT NULL,
-          discord_channel_id TEXT,
-          discord_message_id TEXT
+          decided_at TEXT NOT NULL
         )
         "#,
     )
@@ -147,8 +145,6 @@ pub async fn insert_opencritic_decision(
     game: &OpenCriticGame,
     status: DecisionStatus,
     decided_at: &str,
-    discord_channel_id: Option<String>,
-    discord_message_id: Option<String>,
 ) -> Result<()> {
     sqlx::query(
         r#"
@@ -160,11 +156,9 @@ pub async fn insert_opencritic_decision(
           score,
           review_count,
           percent_recommended,
-          decided_at,
-          discord_channel_id,
-          discord_message_id
+          decided_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(game_id) DO NOTHING
         "#,
     )
@@ -176,8 +170,6 @@ pub async fn insert_opencritic_decision(
     .bind(game.num_reviews)
     .bind(game.percent_recommended)
     .bind(decided_at)
-    .bind(discord_channel_id)
-    .bind(discord_message_id)
     .execute(pool)
     .await
     .with_context(|| format!("Failed to insert OpenCritic decision for {}", game.id))?;
