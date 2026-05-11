@@ -5,7 +5,7 @@ A Discord bot that watches OpenCritic and posts in a channel when a PC game's to
 ## Requirements
 
 - Rust toolchain (stable)
-- A Discord bot application from <https://discord.com/developers/applications>. When inviting the bot to your server, grant it the `applications.commands` and `bot` scopes, plus permission to send messages and embed links in the target channel.
+- A Discord bot application from <https://discord.com/developers/applications>. When generating the invite URL (OAuth2 → URL Generator in the developer portal), tick both the `bot` and `applications.commands` scopes — `bot` lets the application join the server, `applications.commands` is what makes the `/jeff` commands appear. Also grant the bot permission to send messages and embed links in the target channel.
 - A RapidAPI account with access to the OpenCritic API (<https://rapidapi.com/digiwalls/api/opencritic-api>). The free tier allows 200 requests/day.
 
 ## Configuration
@@ -46,9 +46,9 @@ Slash commands are registered to the guild specified by `GUILD_ID` on startup. T
 /jeff health
 ```
 
-`/jeff subscribe` enables alerts in the current channel at the given top critic score (`min_reviews` defaults to 10). On subscribe, currently-qualifying games are snapshotted as baseline so only new threshold crossings post.
+`/jeff subscribe` enables alerts in the current channel for games whose top critic score is at or above `score` and which have at least `min_reviews` reviews (`min_reviews` defaults to 10). The bot scans OpenCritic for PC games released in the current and previous calendar year. Games that already meet the threshold at subscribe time are recorded as known so they do not post — only future threshold crossings produce alerts.
 
-`/jeff threshold` changes the threshold for the active subscription. Lowering it re-baselines the newly-eligible band so existing high-scoring games do not flood the channel.
+`/jeff threshold` updates the threshold of the active subscription. Lowering it records any games that newly qualify under the lower threshold as known (no announcement) so the channel does not get flooded with a backlog. Raising it does not unrecord anything — games already announced stay announced.
 
 `/jeff unsubscribe` disables alerts.
 
