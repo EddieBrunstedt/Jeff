@@ -39,8 +39,7 @@ impl Config {
 
         let pretty_log = std::env::var("PRETTY_LOG")
             .unwrap_or("false".to_string())
-            .parse()
-            .unwrap_or(false);
+            .parse()?;
 
         let rapidapi_key = get_required_env_var("RAPIDAPI_KEY")?;
 
@@ -63,8 +62,7 @@ impl Config {
 
         let opencritic_scan_previous_year = std::env::var("OPENCRITIC_SCAN_PREVIOUS_YEAR")
             .unwrap_or("true".to_string())
-            .parse()
-            .unwrap_or(true);
+            .parse()?;
 
         let opencritic_poll_interval_seconds: u64 =
             std::env::var("OPENCRITIC_POLL_INTERVAL_SECONDS")
