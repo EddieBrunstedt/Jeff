@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Datelike, Utc};
 use poise::serenity_prelude::{self as serenity, HttpError};
 use sqlx::SqlitePool;
@@ -125,6 +125,11 @@ pub async fn run_opencritic_poll(
                     continue;
                 }
 
+                let mut announcement_game = client
+                    .fetch_game(game.id)
+                    .await
+                    .with_context(|| format!("Failed to fetch OpenCritic game {}", game.id))?;
+                announcement_game.fill_missing_from(game);
                 for subscription in &subscriptions {
                     if removed_channels.contains(&subscription.channel_id) {
                         continue;
@@ -147,8 +152,7 @@ pub async fn run_opencritic_poll(
                         }
                     };
 
-                    let message = format_opencritic_announcement(game);
-                    match channel_id.say(http, message).await {
+                    match send_opencritic_announcement(http, channel_id, &announcement_game).await {
                         Ok(sent_message) => {
                             insert_opencritic_announcement(
                                 pool,
@@ -181,7 +185,13 @@ pub async fn run_opencritic_poll(
                     }
                 }
 
-                insert_opencritic_decision(pool, game, DecisionStatus::Announced, &now).await?;
+                insert_opencritic_decision(
+                    pool,
+                    &announcement_game,
+                    DecisionStatus::Announced,
+                    &now,
+                )
+                .await?;
                 handled_games += 1;
             }
         }
@@ -257,20 +267,87 @@ pub fn format_opencritic_announcement(game: &OpenCriticGame) -> String {
     } else {
         game.tier.clone()
     };
-    let release_date = game.first_release_date.as_deref().unwrap_or("unknown");
+    let release_date = game
+        .pc_release_date()
+        .or_else(|| game.first_release_date.as_deref().and_then(non_empty_str))
+        .map(format_opencritic_date)
+        .unwrap_or_else(|| "unknown".to_string());
     let url = game.url.as_deref().unwrap_or("https://opencritic.com");
+    let steam_search_url = steam_search_url(&game.name);
 
     format!(
-        "{} hit {} OpenCritic\n\nTop Critic Average: {:.1}\nRecommended: {}\nReviews: {}\nTier: {}\nRelease date: {}\n\n{}",
+        "## [{}]({}) reached {} on OpenCritic\n\n- **Top Critic Average:** {:.1}\n- **Recommended:** {}\n- **Reviews:** {}\n- **Tier:** {}\n- **Release date for PC:** {}\nSearch for the game on Steam [here]({}).",
         game.name,
+        url,
         rounded_score,
         game.top_critic_score,
         recommended,
         game.num_reviews,
         tier,
         release_date,
-        url
+        steam_search_url,
     )
+}
+
+fn steam_search_url(game_name: &str) -> String {
+    let mut encoded = String::new();
+    for byte in game_name.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(*byte as char);
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+
+    format!("https://store.steampowered.com/search/?term={encoded}")
+}
+
+fn format_opencritic_date(value: &str) -> String {
+    value
+        .split('T')
+        .next()
+        .filter(|date| !date.is_empty())
+        .unwrap_or(value)
+        .to_string()
+}
+
+fn non_empty_str(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+pub async fn send_opencritic_announcement(
+    http: &serenity::Http,
+    channel_id: serenity::ChannelId,
+    game: &OpenCriticGame,
+) -> std::result::Result<serenity::Message, serenity::Error> {
+    let mut message = serenity::CreateMessage::new()
+        .content(format_opencritic_announcement(game))
+        .flags(serenity::MessageFlags::SUPPRESS_EMBEDS);
+
+    if let Some(image_url) = game.primary_image_url() {
+        match serenity::CreateAttachment::url(http, &image_url).await {
+            Ok(attachment) => {
+                message =
+                    message.add_file(attachment.description(format!("{} artwork", game.name)));
+            }
+            Err(err) => {
+                warn!(
+                    game_id = game.id,
+                    image_url = %image_url,
+                    error = %err,
+                    "Failed to fetch OpenCritic image; sending alert without attachment"
+                );
+            }
+        }
+    }
+
+    channel_id.send_message(http, message).await
 }
 
 pub fn spawn_opencritic_background_poll(

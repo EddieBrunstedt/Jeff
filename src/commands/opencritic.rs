@@ -7,9 +7,13 @@ use crate::{
     db::{
         count_opencritic_decisions, delete_opencritic_subscription,
         is_opencritic_baseline_complete, list_baseline_suppressed_opencritic,
-        list_opencritic_subscriptions, upsert_opencritic_subscription,
+        list_opencritic_subscriptions, random_baseline_suppressed_opencritic_game,
+        upsert_opencritic_subscription,
     },
-    poller::{PollMode, rebaseline_for_first_subscriber, run_opencritic_poll},
+    poller::{
+        PollMode, rebaseline_for_first_subscriber, run_opencritic_poll,
+        send_opencritic_announcement,
+    },
     util::humanize_duration,
 };
 
@@ -125,6 +129,53 @@ pub async fn opencritic_unsubscribe(ctx: Context<'_>) -> Result<()> {
         ctx.say("OpenCritic alerts were not enabled in this channel.")
             .await?;
     }
+
+    Ok(())
+}
+
+#[poise::command(slash_command, rename = "opencritic_test_post")]
+pub async fn opencritic_test_post(ctx: Context<'_>) -> Result<()> {
+    ctx.defer_ephemeral().await?;
+
+    let Some(stored_game) = random_baseline_suppressed_opencritic_game(&ctx.data().db).await?
+    else {
+        ctx.send(
+            CreateReply::default()
+                .content(
+                    "No baseline-suppressed OpenCritic games found. Let the baseline poll run, \
+                    or run /opencritic_check first, then try again.",
+                )
+                .ephemeral(true),
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let data = ctx.data();
+    let mut game = data
+        .opencritic_client
+        .fetch_game(stored_game.id)
+        .await
+        .context("Failed to fetch sample OpenCritic game details")?;
+    game.fill_missing_from(&stored_game);
+    let game_name = game.name.clone();
+
+    send_opencritic_announcement(
+        ctx.serenity_context().http.as_ref(),
+        ctx.channel_id(),
+        &game,
+    )
+    .await
+    .context("Failed to post sample OpenCritic announcement")?;
+
+    ctx.send(
+        CreateReply::default()
+            .content(format!(
+                "Posted sample OpenCritic alert for {game_name}. No decisions or announcements were recorded."
+            ))
+            .ephemeral(true),
+    )
+    .await?;
 
     Ok(())
 }

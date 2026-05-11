@@ -46,6 +46,7 @@ async fn run_bot(config: Config) -> Result<()> {
                     commands::opencritic::opencritic_status(),
                     commands::opencritic::opencritic_subscribe(),
                     commands::opencritic::opencritic_suppressed(),
+                    commands::opencritic::opencritic_test_post(),
                     commands::opencritic::opencritic_unsubscribe(),
                 ],
                 ..Default::default()

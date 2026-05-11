@@ -328,6 +328,43 @@ pub async fn list_baseline_suppressed_opencritic(
         .collect())
 }
 
+pub async fn random_baseline_suppressed_opencritic_game(
+    pool: &SqlitePool,
+) -> Result<Option<OpenCriticGame>> {
+    let row: Option<(i64, String, Option<String>, f64, i64, Option<f64>)> = sqlx::query_as(
+        r#"
+        SELECT game_id, name, url, score, review_count, percent_recommended
+        FROM opencritic_decisions
+        WHERE status = 'baseline_suppressed'
+        ORDER BY RANDOM()
+        LIMIT 1
+        "#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("Failed to load random baseline-suppressed OpenCritic game")?;
+
+    Ok(row.map(
+        |(id, name, url, top_critic_score, num_reviews, percent_recommended)| OpenCriticGame {
+            id,
+            name,
+            images: Default::default(),
+            screenshots: Vec::new(),
+            masthead_screenshot: None,
+            banner_screenshot: None,
+            square_screenshot: None,
+            logo_screenshot: None,
+            first_release_date: None,
+            platforms: Vec::new(),
+            percent_recommended: percent_recommended.unwrap_or(-1.0),
+            num_reviews,
+            top_critic_score,
+            tier: String::new(),
+            url,
+        },
+    ))
+}
+
 pub async fn count_opencritic_decisions(pool: &SqlitePool) -> Result<(i64, i64, i64, i64)> {
     let baseline: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM opencritic_decisions WHERE status = 'baseline_suppressed'",

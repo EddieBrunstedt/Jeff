@@ -34,6 +34,7 @@ The bot starts background OpenCritic polling automatically. The first poll creat
 /opencritic_status
 /opencritic_subscribe
 /opencritic_unsubscribe
+/opencritic_test_post
 /opencritic_check post:false
 /opencritic_check post:true
 ```
@@ -41,3 +42,5 @@ The bot starts background OpenCritic polling automatically. The first poll creat
 `/opencritic_subscribe` enables OpenCritic alerts in the current channel. `/opencritic_unsubscribe` disables them.
 
 `/opencritic_check post:false` is a dry run. `post:true` posts new qualifying games to subscribed channels and records them as handled.
+
+`/opencritic_test_post` posts a sample alert in the current channel from a random baseline-suppressed game without recording a decision or announcement.
