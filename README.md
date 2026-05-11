@@ -1,12 +1,16 @@
 # Jeff
 
-A Discord bot for sharing video game info.
+A Discord bot that watches OpenCritic and posts in a channel when a PC game's top critic score crosses a configured threshold. Written in Rust.
 
-Early goal: watch OpenCritic and post when a game reaches a good review-score threshold.
+## Requirements
+
+- Rust toolchain (stable)
+- A Discord bot application from <https://discord.com/developers/applications>. When inviting the bot to your server, grant it the `applications.commands` and `bot` scopes, plus permission to send messages and embed links in the target channel.
+- A RapidAPI account with access to the OpenCritic API (<https://rapidapi.com/digiwalls/api/opencritic-api>). The free tier allows 200 requests/day.
 
 ## Configuration
 
-Required:
+Required environment variables:
 
 ```text
 DISCORD_TOKEN=
@@ -15,6 +19,8 @@ RAPIDAPI_KEY=
 OPENCRITIC_POLL_INTERVAL_SECONDS=
 ```
 
+Each poll typically costs ~6 RapidAPI requests. On the free 200-requests/day tier, intervals of `7200` (2h) or longer leave comfortable headroom.
+
 Optional:
 
 ```text
@@ -22,9 +28,13 @@ DATABASE_URL=sqlite://jeff.sqlite?mode=rwc
 PRETTY_LOG=false
 ```
 
-The bot is designed for a single Discord server with a single subscribed channel. Commands are registered to the guild specified by `GUILD_ID`.
+## Build and run
 
-The bot starts background OpenCritic polling automatically. The poll is a no-op until the bot is subscribed in a channel via `/jeff subscribe`.
+```bash
+cargo run --release
+```
+
+Slash commands are registered to the guild specified by `GUILD_ID` on startup. The bot supports a single subscribed channel at a time.
 
 ## Commands
 
@@ -36,18 +46,14 @@ The bot starts background OpenCritic polling automatically. The poll is a no-op 
 /jeff health
 ```
 
-`/jeff subscribe` enables OpenCritic alerts in the current channel at the given top critic score threshold. The bot supports one subscription at a time. On subscribe, currently-qualifying games are snapshotted as baseline so only new threshold crossings post.
+`/jeff subscribe` enables alerts in the current channel at the given top critic score (`min_reviews` defaults to 10). On subscribe, currently-qualifying games are snapshotted as baseline so only new threshold crossings post.
 
-`/jeff threshold` changes the threshold for the active subscription. Lowering the threshold re-baselines the newly-eligible band so existing high-scoring games do not flood the channel.
+`/jeff threshold` changes the threshold for the active subscription. Lowering it re-baselines the newly-eligible band so existing high-scoring games do not flood the channel.
 
 `/jeff unsubscribe` disables alerts.
 
-`/jeff status` shows whether the bot is subscribed and the current threshold.
+`/jeff status` shows the current subscription state.
 
 `/jeff health` reports bot health (uptime, database, gateway latency, OpenCritic API quota, last poll).
 
 The configuration commands (`subscribe`, `threshold`, `unsubscribe`) require the **Manage Channels** permission.
-
-## Migration
-
-If you have an existing `jeff.sqlite` from a previous version, delete it before starting this build. The schema has been simplified and the old data is not upgraded automatically. Re-running `/jeff subscribe` will rebuild the baseline.
