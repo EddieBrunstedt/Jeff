@@ -18,29 +18,26 @@ Optional:
 
 ```text
 DATABASE_URL=sqlite://jeff.sqlite?mode=rwc
-OPENCRITIC_THRESHOLD=85
-OPENCRITIC_MIN_REVIEWS=10
-OPENCRITIC_SCAN_PREVIOUS_YEAR=true
 OPENCRITIC_POLL_INTERVAL_SECONDS=21600
 PRETTY_LOG=false
 ```
 
-The bot starts background OpenCritic polling automatically. The first poll creates a baseline and posts nothing. Alerts are sent only to channels that have subscribed with `/opencritic_subscribe`.
+The bot starts background OpenCritic polling automatically. Thresholds are configured per channel through `/opencritic_subscribe`; the poll is a no-op until at least one channel is subscribed.
 
 ## Commands
 
 ```text
 /healthcheck
 /opencritic_status
-/opencritic_subscribe
+/opencritic_subscribe score:<n> [min_reviews:<n>]
+/opencritic_set_threshold score:<n> [min_reviews:<n>]
 /opencritic_unsubscribe
-/opencritic_test_post
-/opencritic_check post:false
-/opencritic_check post:true
 ```
 
-`/opencritic_subscribe` enables OpenCritic alerts in the current channel. `/opencritic_unsubscribe` disables them.
+`/opencritic_subscribe score:<n>` enables OpenCritic alerts in the current channel at the given top critic score threshold. On subscribe, currently-qualifying games are snapshotted as baseline-suppressed so only new threshold crossings post.
 
-`/opencritic_check post:false` is a dry run. `post:true` posts new qualifying games to subscribed channels and records them as handled.
+`/opencritic_set_threshold score:<n>` changes the threshold for the current channel. Lowering the threshold re-baselines the newly-eligible band so existing high-scoring games do not flood the channel.
 
-`/opencritic_test_post` posts a sample alert in the current channel from a random baseline-suppressed game without recording a decision or announcement.
+`/opencritic_unsubscribe` disables alerts in the current channel.
+
+The configuration commands (`subscribe`, `set_threshold`, `unsubscribe`) require the **Manage Channels** permission.

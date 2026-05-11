@@ -12,13 +12,18 @@ use tracing::{error, info, warn};
 use crate::{
     config::Config,
     db::{
-        DecisionStatus, delete_opencritic_subscription, insert_opencritic_announcement,
-        insert_opencritic_decision, is_opencritic_baseline_complete, list_opencritic_subscriptions,
-        mark_opencritic_baseline_complete, opencritic_announcement_exists,
+        DecisionStatus, OpenCriticSubscription, delete_opencritic_subscription,
+        insert_opencritic_announcement, insert_opencritic_decision,
+        list_opencritic_subscriptions, opencritic_announcement_exists,
         opencritic_decision_exists,
     },
     opencritic::{OpenCriticClient, OpenCriticGame},
 };
+
+fn scan_years() -> Vec<i32> {
+    let current_year = Utc::now().year();
+    vec![current_year, current_year - 1]
+}
 
 const DISCORD_UNKNOWN_CHANNEL_ERROR_CODE: isize = 10003;
 
@@ -32,23 +37,12 @@ fn is_channel_gone_error(err: &serenity::Error) -> bool {
 
 #[derive(Debug, Clone)]
 pub struct PollOutcome {
-    pub baseline_completed_before_run: bool,
-    pub baseline_created: bool,
-    pub qualifying_games: usize,
-    pub baseline_suppressed: usize,
-    pub handled_games: usize,
-    pub messages_sent: usize,
-    pub would_handle_games: usize,
-    pub skipped_existing_decision: usize,
+    pub scanned_games: usize,
     pub active_subscriptions: usize,
+    pub messages_sent: usize,
+    pub already_decided: usize,
     pub pages_requested: usize,
-    pub years: Vec<i32>,
     pub rate_limit_remaining: Option<String>,
-}
-
-pub enum PollMode<'a> {
-    DryRun,
-    Live { http: &'a serenity::Http },
 }
 
 #[derive(Debug, Clone)]
@@ -60,155 +54,147 @@ pub struct LastPollSnapshot {
 pub async fn run_opencritic_poll(
     pool: &SqlitePool,
     client: &OpenCriticClient,
-    config: &Config,
-    mode: PollMode<'_>,
+    http: &serenity::Http,
 ) -> Result<PollOutcome> {
-    let years = scan_years(config);
-    let scan = client
-        .scan_years(
-            &years,
-            config.opencritic_threshold,
-            config.opencritic_min_reviews,
-        )
-        .await?;
-
-    let baseline_completed_before_run = is_opencritic_baseline_complete(pool).await?;
     let subscriptions = list_opencritic_subscriptions(pool).await?;
-    let now = Utc::now().to_rfc3339();
 
-    if !baseline_completed_before_run {
-        let mut baseline_suppressed = 0;
-
-        for game in &scan.games {
-            insert_opencritic_decision(pool, game, DecisionStatus::BaselineSuppressed, &now)
-                .await?;
-            baseline_suppressed += 1;
-        }
-
-        mark_opencritic_baseline_complete(pool, &now).await?;
-
+    if subscriptions.is_empty() {
         return Ok(PollOutcome {
-            baseline_completed_before_run,
-            baseline_created: true,
-            qualifying_games: scan.games.len(),
-            baseline_suppressed,
-            handled_games: 0,
+            scanned_games: 0,
+            active_subscriptions: 0,
             messages_sent: 0,
-            would_handle_games: 0,
-            skipped_existing_decision: 0,
-            active_subscriptions: subscriptions.len(),
-            pages_requested: scan.pages_requested,
-            years: scan.years,
-            rate_limit_remaining: scan.rate_limit_remaining,
+            already_decided: 0,
+            pages_requested: 0,
+            rate_limit_remaining: client.last_rate_limit_remaining(),
         });
     }
 
-    let mut handled_games = 0;
+    let years = scan_years();
+
+    let min_threshold = subscriptions
+        .iter()
+        .map(|s| s.threshold)
+        .fold(f64::INFINITY, f64::min);
+    let min_reviews = subscriptions
+        .iter()
+        .map(|s| s.min_reviews)
+        .min()
+        .expect("subscriptions is non-empty");
+
+    let scan = client
+        .scan_years(&years, min_threshold, min_reviews)
+        .await?;
+
+    let now = Utc::now().to_rfc3339();
     let mut messages_sent = 0;
-    let mut would_handle_games = 0;
-    let mut skipped_existing_decision = 0;
+    let mut already_decided = 0;
     let mut removed_channels: HashSet<String> = HashSet::new();
 
     for game in &scan.games {
-        if opencritic_decision_exists(pool, game.id).await? {
-            skipped_existing_decision += 1;
-            continue;
-        }
+        let mut fetched_game: Option<OpenCriticGame> = None;
 
-        match mode {
-            PollMode::DryRun => {
-                would_handle_games += 1;
+        for subscription in &subscriptions {
+            if removed_channels.contains(&subscription.channel_id) {
+                continue;
             }
-            PollMode::Live { http } => {
-                if subscriptions.is_empty() {
-                    would_handle_games += 1;
-                    continue;
-                }
+            if !game.qualifies(subscription.threshold, subscription.min_reviews) {
+                continue;
+            }
+            if opencritic_decision_exists(pool, game.id, &subscription.channel_id).await? {
+                already_decided += 1;
+                continue;
+            }
 
-                let mut announcement_game = client
+            if fetched_game.is_none() {
+                let mut full = client
                     .fetch_game(game.id)
                     .await
                     .with_context(|| format!("Failed to fetch OpenCritic game {}", game.id))?;
-                announcement_game.fill_missing_from(game);
-                for subscription in &subscriptions {
-                    if removed_channels.contains(&subscription.channel_id) {
-                        continue;
-                    }
-                    if opencritic_announcement_exists(pool, game.id, &subscription.channel_id)
-                        .await?
-                    {
-                        continue;
-                    }
+                full.fill_missing_from(game);
+                fetched_game = Some(full);
+            }
+            let announcement_game = fetched_game.as_ref().expect("just ensured");
 
-                    let channel_id = match subscription.channel_id.parse::<u64>() {
-                        Ok(id) => serenity::ChannelId::new(id),
-                        Err(err) => {
-                            error!(
-                                channel = %subscription.channel_id,
-                                error = %err,
-                                "Invalid subscribed channel ID; skipping for this poll"
-                            );
-                            continue;
-                        }
-                    };
-
-                    match send_opencritic_announcement(http, channel_id, &announcement_game).await {
-                        Ok(sent_message) => {
-                            insert_opencritic_announcement(
-                                pool,
-                                game.id,
-                                &subscription.guild_id,
-                                &subscription.channel_id,
-                                &sent_message.id.to_string(),
-                                &now,
-                            )
-                            .await?;
-                            messages_sent += 1;
-                        }
-                        Err(err) if is_channel_gone_error(&err) => {
-                            warn!(
-                                channel = %subscription.channel_id,
-                                game_id = game.id,
-                                "Discord reports channel is gone (10003); auto-unsubscribing"
-                            );
-                            delete_opencritic_subscription(pool, &subscription.channel_id).await?;
-                            removed_channels.insert(subscription.channel_id.clone());
-                        }
-                        Err(err) => {
-                            error!(
-                                channel = %subscription.channel_id,
-                                game_id = game.id,
-                                error = %err,
-                                "Failed to post OpenCritic announcement; continuing"
-                            );
-                        }
-                    }
-                }
-
+            if opencritic_announcement_exists(pool, game.id, &subscription.channel_id).await? {
                 insert_opencritic_decision(
                     pool,
-                    &announcement_game,
+                    announcement_game,
+                    &subscription.channel_id,
                     DecisionStatus::Announced,
                     &now,
                 )
                 .await?;
-                handled_games += 1;
+                continue;
+            }
+
+            let channel_id = match subscription.channel_id.parse::<u64>() {
+                Ok(id) => serenity::ChannelId::new(id),
+                Err(err) => {
+                    error!(
+                        channel = %subscription.channel_id,
+                        error = %err,
+                        "Invalid subscribed channel ID; skipping for this poll"
+                    );
+                    continue;
+                }
+            };
+
+            match send_opencritic_announcement(http, channel_id, announcement_game).await {
+                Ok(sent_message) => {
+                    insert_opencritic_announcement(
+                        pool,
+                        game.id,
+                        &subscription.guild_id,
+                        &subscription.channel_id,
+                        &sent_message.id.to_string(),
+                        &now,
+                    )
+                    .await?;
+                    insert_opencritic_decision(
+                        pool,
+                        announcement_game,
+                        &subscription.channel_id,
+                        DecisionStatus::Announced,
+                        &now,
+                    )
+                    .await?;
+                    messages_sent += 1;
+                }
+                Err(err) if is_channel_gone_error(&err) => {
+                    warn!(
+                        channel = %subscription.channel_id,
+                        game_id = game.id,
+                        "Discord reports channel is gone (10003); auto-unsubscribing"
+                    );
+                    delete_opencritic_subscription(pool, &subscription.channel_id).await?;
+                    removed_channels.insert(subscription.channel_id.clone());
+                }
+                Err(err) => {
+                    error!(
+                        channel = %subscription.channel_id,
+                        game_id = game.id,
+                        error = %err,
+                        "Failed to post OpenCritic announcement; recording decision anyway to avoid retry storms"
+                    );
+                    insert_opencritic_decision(
+                        pool,
+                        announcement_game,
+                        &subscription.channel_id,
+                        DecisionStatus::Announced,
+                        &now,
+                    )
+                    .await?;
+                }
             }
         }
     }
 
     Ok(PollOutcome {
-        baseline_completed_before_run,
-        baseline_created: false,
-        qualifying_games: scan.games.len(),
-        baseline_suppressed: 0,
-        handled_games,
-        messages_sent,
-        would_handle_games,
-        skipped_existing_decision,
+        scanned_games: scan.games.len(),
         active_subscriptions: subscriptions.len(),
+        messages_sent,
+        already_decided,
         pages_requested: scan.pages_requested,
-        years: scan.years,
         rate_limit_remaining: scan.rate_limit_remaining,
     })
 }
@@ -216,42 +202,37 @@ pub async fn run_opencritic_poll(
 #[derive(Debug)]
 pub struct RebaselineOutcome {
     pub newly_suppressed: usize,
-    pub already_decided: usize,
-    pub pages_requested: usize,
-    pub rate_limit_remaining: Option<String>,
 }
 
-pub async fn rebaseline_for_first_subscriber(
+pub async fn rebaseline_channel(
     pool: &SqlitePool,
     client: &OpenCriticClient,
-    config: &Config,
+    subscription: &OpenCriticSubscription,
 ) -> Result<RebaselineOutcome> {
-    let years = scan_years(config);
+    let years = scan_years();
     let scan = client
-        .scan_years(
-            &years,
-            config.opencritic_threshold,
-            config.opencritic_min_reviews,
-        )
+        .scan_years(&years, subscription.threshold, subscription.min_reviews)
         .await?;
     let now = Utc::now().to_rfc3339();
     let mut newly_suppressed = 0;
-    let mut already_decided = 0;
 
     for game in &scan.games {
-        if opencritic_decision_exists(pool, game.id).await? {
-            already_decided += 1;
+        if opencritic_decision_exists(pool, game.id, &subscription.channel_id).await? {
             continue;
         }
-        insert_opencritic_decision(pool, game, DecisionStatus::BaselineSuppressed, &now).await?;
+        insert_opencritic_decision(
+            pool,
+            game,
+            &subscription.channel_id,
+            DecisionStatus::BaselineSuppressed,
+            &now,
+        )
+        .await?;
         newly_suppressed += 1;
     }
 
     Ok(RebaselineOutcome {
         newly_suppressed,
-        already_decided,
-        pages_requested: scan.pages_requested,
-        rate_limit_remaining: scan.rate_limit_remaining,
     })
 }
 
@@ -366,16 +347,14 @@ pub fn spawn_opencritic_background_poll(
 
             info!("Running background OpenCritic poll");
 
-            match run_opencritic_poll(&pool, &client, &config, PollMode::Live { http: &http }).await
-            {
+            match run_opencritic_poll(&pool, &client, &http).await {
                 Ok(outcome) => {
                     info!(
                         pages_requested = outcome.pages_requested,
-                        qualifying_games = outcome.qualifying_games,
-                        handled_games = outcome.handled_games,
+                        scanned_games = outcome.scanned_games,
                         messages_sent = outcome.messages_sent,
+                        already_decided = outcome.already_decided,
                         active_subscriptions = outcome.active_subscriptions,
-                        baseline_created = outcome.baseline_created,
                         rate_limit_remaining = outcome.rate_limit_remaining.as_deref(),
                         "Background OpenCritic poll complete"
                     );
@@ -390,14 +369,4 @@ pub fn spawn_opencritic_background_poll(
             }
         }
     });
-}
-
-fn scan_years(config: &Config) -> Vec<i32> {
-    let current_year = Utc::now().year();
-
-    if config.opencritic_scan_previous_year {
-        vec![current_year, current_year - 1]
-    } else {
-        vec![current_year]
-    }
 }

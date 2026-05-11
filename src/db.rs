@@ -3,7 +3,6 @@ use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
 use crate::opencritic::OpenCriticGame;
 
-const BASELINE_COMPLETED_KEY: &str = "opencritic_baseline_completed_at";
 const OPENCRITIC_FEATURE: &str = "opencritic";
 
 #[derive(Debug, Clone, Copy)]
@@ -22,17 +21,11 @@ impl DecisionStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct FeatureSubscription {
+pub struct OpenCriticSubscription {
     pub guild_id: String,
     pub channel_id: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct SuppressedDecision {
-    pub name: String,
-    pub url: Option<String>,
-    pub score: f64,
-    pub review_count: i64,
+    pub threshold: f64,
+    pub min_reviews: i64,
 }
 
 pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
@@ -45,14 +38,16 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS opencritic_decisions (
-          game_id INTEGER PRIMARY KEY,
+          game_id INTEGER NOT NULL,
+          channel_id TEXT NOT NULL,
           status TEXT NOT NULL CHECK (status IN ('baseline_suppressed', 'announced')),
           name TEXT NOT NULL,
           url TEXT,
           score REAL NOT NULL,
           review_count INTEGER NOT NULL,
           percent_recommended REAL,
-          decided_at TEXT NOT NULL
+          decided_at TEXT NOT NULL,
+          PRIMARY KEY (game_id, channel_id)
         )
         "#,
     )
@@ -62,22 +57,12 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
 
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS bot_meta (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
-        )
-        "#,
-    )
-    .execute(&pool)
-    .await
-    .context("Failed to create bot_meta table")?;
-
-    sqlx::query(
-        r#"
         CREATE TABLE IF NOT EXISTS feature_subscriptions (
           feature TEXT NOT NULL,
           guild_id TEXT NOT NULL,
           channel_id TEXT NOT NULL,
+          threshold REAL NOT NULL,
+          min_reviews INTEGER NOT NULL,
           created_by TEXT NOT NULL,
           created_at TEXT NOT NULL,
           PRIMARY KEY (feature, channel_id)
@@ -115,43 +100,19 @@ pub async fn ping(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-pub async fn is_opencritic_baseline_complete(pool: &SqlitePool) -> Result<bool> {
-    let value: Option<(String,)> = sqlx::query_as("SELECT value FROM bot_meta WHERE key = ?")
-        .bind(BASELINE_COMPLETED_KEY)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to read OpenCritic baseline metadata")?;
-
-    Ok(value.is_some())
-}
-
-pub async fn mark_opencritic_baseline_complete(
+pub async fn opencritic_decision_exists(
     pool: &SqlitePool,
-    completed_at: &str,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO bot_meta (key, value)
-        VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        "#,
+    game_id: i64,
+    channel_id: &str,
+) -> Result<bool> {
+    let value: Option<(i64,)> = sqlx::query_as(
+        "SELECT game_id FROM opencritic_decisions WHERE game_id = ? AND channel_id = ? LIMIT 1",
     )
-    .bind(BASELINE_COMPLETED_KEY)
-    .bind(completed_at)
-    .execute(pool)
+    .bind(game_id)
+    .bind(channel_id)
+    .fetch_optional(pool)
     .await
-    .context("Failed to store OpenCritic baseline metadata")?;
-
-    Ok(())
-}
-
-pub async fn opencritic_decision_exists(pool: &SqlitePool, game_id: i64) -> Result<bool> {
-    let value: Option<(i64,)> =
-        sqlx::query_as("SELECT game_id FROM opencritic_decisions WHERE game_id = ? LIMIT 1")
-            .bind(game_id)
-            .fetch_optional(pool)
-            .await
-            .context("Failed to check OpenCritic decision")?;
+    .context("Failed to check OpenCritic decision")?;
 
     Ok(value.is_some())
 }
@@ -159,6 +120,7 @@ pub async fn opencritic_decision_exists(pool: &SqlitePool, game_id: i64) -> Resu
 pub async fn insert_opencritic_decision(
     pool: &SqlitePool,
     game: &OpenCriticGame,
+    channel_id: &str,
     status: DecisionStatus,
     decided_at: &str,
 ) -> Result<()> {
@@ -166,6 +128,7 @@ pub async fn insert_opencritic_decision(
         r#"
         INSERT INTO opencritic_decisions (
           game_id,
+          channel_id,
           status,
           name,
           url,
@@ -174,11 +137,12 @@ pub async fn insert_opencritic_decision(
           percent_recommended,
           decided_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(game_id) DO NOTHING
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_id, channel_id) DO NOTHING
         "#,
     )
     .bind(game.id)
+    .bind(channel_id)
     .bind(status.as_str())
     .bind(&game.name)
     .bind(&game.url)
@@ -188,7 +152,12 @@ pub async fn insert_opencritic_decision(
     .bind(decided_at)
     .execute(pool)
     .await
-    .with_context(|| format!("Failed to insert OpenCritic decision for {}", game.id))?;
+    .with_context(|| {
+        format!(
+            "Failed to insert OpenCritic decision for game {} channel {}",
+            game.id, channel_id
+        )
+    })?;
 
     Ok(())
 }
@@ -197,15 +166,19 @@ pub async fn upsert_opencritic_subscription(
     pool: &SqlitePool,
     guild_id: &str,
     channel_id: &str,
+    threshold: f64,
+    min_reviews: i64,
     created_by: &str,
     created_at: &str,
 ) -> Result<()> {
     sqlx::query(
         r#"
-        INSERT INTO feature_subscriptions (feature, guild_id, channel_id, created_by, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO feature_subscriptions (feature, guild_id, channel_id, threshold, min_reviews, created_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(feature, channel_id) DO UPDATE SET
           guild_id = excluded.guild_id,
+          threshold = excluded.threshold,
+          min_reviews = excluded.min_reviews,
           created_by = excluded.created_by,
           created_at = excluded.created_at
         "#,
@@ -213,6 +186,8 @@ pub async fn upsert_opencritic_subscription(
     .bind(OPENCRITIC_FEATURE)
     .bind(guild_id)
     .bind(channel_id)
+    .bind(threshold)
+    .bind(min_reviews)
     .bind(created_by)
     .bind(created_at)
     .execute(pool)
@@ -220,6 +195,30 @@ pub async fn upsert_opencritic_subscription(
     .context("Failed to store OpenCritic subscription")?;
 
     Ok(())
+}
+
+pub async fn update_opencritic_subscription_settings(
+    pool: &SqlitePool,
+    channel_id: &str,
+    threshold: f64,
+    min_reviews: i64,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        UPDATE feature_subscriptions
+        SET threshold = ?, min_reviews = ?
+        WHERE feature = ? AND channel_id = ?
+        "#,
+    )
+    .bind(threshold)
+    .bind(min_reviews)
+    .bind(OPENCRITIC_FEATURE)
+    .bind(channel_id)
+    .execute(pool)
+    .await
+    .context("Failed to update OpenCritic subscription settings")?;
+
+    Ok(result.rows_affected() > 0)
 }
 
 pub async fn delete_opencritic_subscription(pool: &SqlitePool, channel_id: &str) -> Result<bool> {
@@ -234,22 +233,47 @@ pub async fn delete_opencritic_subscription(pool: &SqlitePool, channel_id: &str)
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn list_opencritic_subscriptions(pool: &SqlitePool) -> Result<Vec<FeatureSubscription>> {
-    let subscriptions = sqlx::query_as::<_, (String, String)>(
-        "SELECT guild_id, channel_id FROM feature_subscriptions WHERE feature = ? ORDER BY channel_id",
+pub async fn list_opencritic_subscriptions(
+    pool: &SqlitePool,
+) -> Result<Vec<OpenCriticSubscription>> {
+    let subscriptions = sqlx::query_as::<_, (String, String, f64, i64)>(
+        "SELECT guild_id, channel_id, threshold, min_reviews FROM feature_subscriptions WHERE feature = ? ORDER BY channel_id",
     )
     .bind(OPENCRITIC_FEATURE)
     .fetch_all(pool)
     .await
     .context("Failed to list OpenCritic subscriptions")?
     .into_iter()
-    .map(|(guild_id, channel_id)| FeatureSubscription {
+    .map(|(guild_id, channel_id, threshold, min_reviews)| OpenCriticSubscription {
         guild_id,
         channel_id,
+        threshold,
+        min_reviews,
     })
     .collect();
 
     Ok(subscriptions)
+}
+
+pub async fn get_opencritic_subscription(
+    pool: &SqlitePool,
+    channel_id: &str,
+) -> Result<Option<OpenCriticSubscription>> {
+    let row: Option<(String, String, f64, i64)> = sqlx::query_as(
+        "SELECT guild_id, channel_id, threshold, min_reviews FROM feature_subscriptions WHERE feature = ? AND channel_id = ?",
+    )
+    .bind(OPENCRITIC_FEATURE)
+    .bind(channel_id)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to load OpenCritic subscription")?;
+
+    Ok(row.map(|(guild_id, channel_id, threshold, min_reviews)| OpenCriticSubscription {
+        guild_id,
+        channel_id,
+        threshold,
+        min_reviews,
+    }))
 }
 
 pub async fn opencritic_announcement_exists(
@@ -302,100 +326,13 @@ pub async fn insert_opencritic_announcement(
     Ok(())
 }
 
-pub async fn list_baseline_suppressed_opencritic(
-    pool: &SqlitePool,
-) -> Result<Vec<SuppressedDecision>> {
-    let rows: Vec<(String, Option<String>, f64, i64)> = sqlx::query_as(
-        r#"
-        SELECT name, url, score, review_count
-        FROM opencritic_decisions
-        WHERE status = 'baseline_suppressed'
-        ORDER BY score DESC
-        "#,
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to list baseline-suppressed OpenCritic games")?;
-
-    Ok(rows
-        .into_iter()
-        .map(|(name, url, score, review_count)| SuppressedDecision {
-            name,
-            url,
-            score,
-            review_count,
-        })
-        .collect())
-}
-
-pub async fn random_baseline_suppressed_opencritic_game(
-    pool: &SqlitePool,
-) -> Result<Option<OpenCriticGame>> {
-    let row: Option<(i64, String, Option<String>, f64, i64, Option<f64>)> = sqlx::query_as(
-        r#"
-        SELECT game_id, name, url, score, review_count, percent_recommended
-        FROM opencritic_decisions
-        WHERE status = 'baseline_suppressed'
-        ORDER BY RANDOM()
-        LIMIT 1
-        "#,
-    )
-    .fetch_optional(pool)
-    .await
-    .context("Failed to load random baseline-suppressed OpenCritic game")?;
-
-    Ok(row.map(
-        |(id, name, url, top_critic_score, num_reviews, percent_recommended)| OpenCriticGame {
-            id,
-            name,
-            images: Default::default(),
-            screenshots: Vec::new(),
-            masthead_screenshot: None,
-            banner_screenshot: None,
-            square_screenshot: None,
-            logo_screenshot: None,
-            first_release_date: None,
-            platforms: Vec::new(),
-            percent_recommended: percent_recommended.unwrap_or(-1.0),
-            num_reviews,
-            top_critic_score,
-            tier: String::new(),
-            url,
-        },
-    ))
-}
-
-pub async fn count_opencritic_decisions(pool: &SqlitePool) -> Result<(i64, i64, i64, i64)> {
-    let baseline: (i64,) = sqlx::query_as(
-        "SELECT COUNT(*) FROM opencritic_decisions WHERE status = 'baseline_suppressed'",
-    )
-    .fetch_one(pool)
-    .await
-    .context("Failed to count baseline OpenCritic decisions")?;
-
-    let announced: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM opencritic_decisions WHERE status = 'announced'")
-            .fetch_one(pool)
-            .await
-            .context("Failed to count announced OpenCritic decisions")?;
-
-    let subscriptions: (i64,) =
+pub async fn count_opencritic_subscriptions(pool: &SqlitePool) -> Result<i64> {
+    let count: (i64,) =
         sqlx::query_as("SELECT COUNT(*) FROM feature_subscriptions WHERE feature = ?")
             .bind(OPENCRITIC_FEATURE)
             .fetch_one(pool)
             .await
             .context("Failed to count OpenCritic subscriptions")?;
 
-    let announcement_deliveries: (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM opencritic_announcements")
-            .fetch_one(pool)
-            .await
-            .context("Failed to count OpenCritic announcement deliveries")?;
-
-    Ok((
-        baseline.0,
-        announced.0,
-        subscriptions.0,
-        announcement_deliveries.0,
-    ))
+    Ok(count.0)
 }

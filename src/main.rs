@@ -42,11 +42,9 @@ async fn run_bot(config: Config) -> Result<()> {
             .options(poise::FrameworkOptions {
                 commands: vec![
                     commands::healthcheck::healthcheck(),
-                    commands::opencritic::check_opencritic(),
+                    commands::opencritic::opencritic_set_threshold(),
                     commands::opencritic::opencritic_status(),
                     commands::opencritic::opencritic_subscribe(),
-                    commands::opencritic::opencritic_suppressed(),
-                    commands::opencritic::opencritic_test_post(),
                     commands::opencritic::opencritic_unsubscribe(),
                 ],
                 ..Default::default()
@@ -106,7 +104,6 @@ async fn initialize_bot_data(
     info!("Bot initialization complete");
 
     Ok(Data {
-        config,
         db,
         opencritic_client,
         started_at: Utc::now(),

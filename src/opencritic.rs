@@ -18,7 +18,6 @@ pub struct OpenCriticClient {
 pub struct OpenCriticScan {
     pub games: Vec<OpenCriticGame>,
     pub pages_requested: usize,
-    pub years: Vec<i32>,
     pub rate_limit_remaining: Option<String>,
 }
 
@@ -336,7 +335,6 @@ impl OpenCriticClient {
         Ok(OpenCriticScan {
             games,
             pages_requested,
-            years: years.to_vec(),
             rate_limit_remaining,
         })
     }
@@ -385,7 +383,6 @@ impl OpenCriticClient {
         Ok(OpenCriticScan {
             games,
             pages_requested,
-            years: vec![year],
             rate_limit_remaining,
         })
     }

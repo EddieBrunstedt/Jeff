@@ -1,24 +1,32 @@
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
     context::Context,
     db::{
-        count_opencritic_decisions, delete_opencritic_subscription,
-        is_opencritic_baseline_complete, list_baseline_suppressed_opencritic,
-        list_opencritic_subscriptions, random_baseline_suppressed_opencritic_game,
-        upsert_opencritic_subscription,
+        delete_opencritic_subscription, get_opencritic_subscription,
+        update_opencritic_subscription_settings, upsert_opencritic_subscription,
     },
-    poller::{
-        PollMode, rebaseline_for_first_subscriber, run_opencritic_poll,
-        send_opencritic_announcement,
-    },
-    util::humanize_duration,
+    poller::rebaseline_channel,
 };
 
-#[poise::command(slash_command, rename = "opencritic_subscribe")]
-pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
+const DEFAULT_MIN_REVIEWS: i64 = 10;
+
+#[poise::command(
+    slash_command,
+    rename = "opencritic_subscribe",
+    default_member_permissions = "MANAGE_CHANNELS"
+)]
+pub async fn opencritic_subscribe(
+    ctx: Context<'_>,
+    #[description = "Minimum top critic score required to post (e.g. 85)"]
+    #[min = 1.0]
+    #[max = 100.0]
+    score: f64,
+    #[description = "Minimum number of reviews required (default 10)"]
+    #[min = 1]
+    min_reviews: Option<i64>,
+) -> Result<()> {
     let guild_id = ctx
         .guild_id()
         .context("OpenCritic subscriptions can only be configured in a server")?;
@@ -26,98 +34,115 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     let created_by = ctx.author().id.to_string();
     let created_at = Utc::now().to_rfc3339();
     let data = ctx.data();
+    let min_reviews = min_reviews.unwrap_or(DEFAULT_MIN_REVIEWS);
 
-    let existing = list_opencritic_subscriptions(&data.db).await?;
-    let baseline_complete = is_opencritic_baseline_complete(&data.db).await?;
-    let is_first_subscriber = existing.is_empty();
-    let needs_rebaseline = is_first_subscriber && baseline_complete;
-
-    if needs_rebaseline {
-        ctx.defer().await?;
-    }
-
-    let rebaseline = if needs_rebaseline {
-        Some(
-            rebaseline_for_first_subscriber(&data.db, &data.opencritic_client, &data.config)
-                .await?,
-        )
-    } else {
-        None
-    };
+    ctx.defer().await?;
 
     upsert_opencritic_subscription(
         &data.db,
         &guild_id.to_string(),
         &channel_id.to_string(),
+        score,
+        min_reviews,
         &created_by,
         &created_at,
     )
     .await?;
 
-    let reply = match (is_first_subscriber, baseline_complete) {
-        (false, _) => "OpenCritic alerts enabled in this channel.".to_string(),
-        (true, false) => "OpenCritic alerts enabled. The initial baseline poll has not run yet; \
-            once it does, currently-qualifying games will be suppressed and only new threshold \
-            crossings will be posted here."
-            .to_string(),
-        (true, true) => {
-            let outcome =
-                rebaseline.expect("rebaseline runs when first subscriber + baseline complete");
-            let rate_limit = outcome.rate_limit_remaining.as_deref().unwrap_or("unknown");
-            format!(
-                "OpenCritic alerts enabled. Snapshotted {} currently-qualifying games as \
-                baseline ({} already in the ledger). Only new threshold crossings will be \
-                posted here.\nPages requested: {}\nRapidAPI requests remaining: {}",
-                outcome.newly_suppressed,
-                outcome.already_decided,
-                outcome.pages_requested,
-                rate_limit,
-            )
-        }
-    };
+    let subscription = get_opencritic_subscription(&data.db, &channel_id.to_string())
+        .await?
+        .context("Subscription disappeared immediately after upsert")?;
 
-    ctx.say(reply).await?;
+    let outcome = rebaseline_channel(&data.db, &data.opencritic_client, &subscription).await?;
+
+    ctx.say(format!(
+        "OpenCritic alerts enabled in this channel.\n\
+        Threshold: {:.1} | Minimum reviews: {}\n\
+        Snapshotted {} currently-qualifying games as baseline. Only new threshold crossings will be posted here.",
+        score, min_reviews, outcome.newly_suppressed,
+    ))
+    .await?;
 
     Ok(())
 }
 
-#[poise::command(slash_command, rename = "opencritic_suppressed")]
-pub async fn opencritic_suppressed(ctx: Context<'_>) -> Result<()> {
+#[poise::command(
+    slash_command,
+    rename = "opencritic_set_threshold",
+    default_member_permissions = "MANAGE_CHANNELS"
+)]
+pub async fn opencritic_set_threshold(
+    ctx: Context<'_>,
+    #[description = "New minimum top critic score required to post (e.g. 85)"]
+    #[min = 1.0]
+    #[max = 100.0]
+    score: f64,
+    #[description = "New minimum number of reviews required (leave blank to keep current value)"]
+    #[min = 1]
+    min_reviews: Option<i64>,
+) -> Result<()> {
+    let channel_id = ctx.channel_id();
     let data = ctx.data();
-    let rows = list_baseline_suppressed_opencritic(&data.db).await?;
 
-    if rows.is_empty() {
-        ctx.say("No baseline-suppressed OpenCritic games in the database.")
+    let Some(existing) = get_opencritic_subscription(&data.db, &channel_id.to_string()).await?
+    else {
+        ctx.say(
+            "OpenCritic alerts are not enabled in this channel. Use /opencritic_subscribe first.",
+        )
+        .await?;
+        return Ok(());
+    };
+
+    let new_min_reviews = min_reviews.unwrap_or(existing.min_reviews);
+
+    if (score - existing.threshold).abs() < f64::EPSILON
+        && new_min_reviews == existing.min_reviews
+    {
+        ctx.say(format!(
+            "OpenCritic threshold for this channel is already {:.1} with {} minimum reviews. No change.",
+            existing.threshold, existing.min_reviews
+        ))
+        .await?;
+        return Ok(());
+    }
+
+    ctx.defer().await?;
+
+    let updated = update_opencritic_subscription_settings(
+        &data.db,
+        &channel_id.to_string(),
+        score,
+        new_min_reviews,
+    )
+    .await?;
+    if !updated {
+        ctx.say("Subscription disappeared before the update could complete.")
             .await?;
         return Ok(());
     }
 
-    let mut body = format!(
-        "Baseline-suppressed OpenCritic games ({} total, sorted by score)\n\n",
-        rows.len()
-    );
-    for row in &rows {
-        let url = row.url.as_deref().unwrap_or("");
-        body.push_str(&format!(
-            "- {} (score {:.1}, {} reviews) {}\n",
-            row.name, row.score, row.review_count, url
-        ));
-    }
+    let subscription = get_opencritic_subscription(&data.db, &channel_id.to_string())
+        .await?
+        .context("Subscription disappeared immediately after update")?;
 
-    let attachment =
-        serenity::CreateAttachment::bytes(body.into_bytes(), "opencritic_suppressed.txt");
-    let reply = CreateReply::default()
-        .content(format!(
-            "Baseline-suppressed OpenCritic games: {} total. See attachment.",
-            rows.len()
-        ))
-        .attachment(attachment);
-    ctx.send(reply).await?;
+    let outcome = rebaseline_channel(&data.db, &data.opencritic_client, &subscription).await?;
+
+    ctx.say(format!(
+        "OpenCritic threshold for this channel updated.\n\
+        Previous: {:.1} / {} reviews — New: {:.1} / {} reviews\n\
+        Snapshotted {} newly-qualifying games as baseline.",
+        existing.threshold, existing.min_reviews, score, new_min_reviews, outcome.newly_suppressed,
+    ))
+    .await?;
 
     Ok(())
 }
 
-#[poise::command(slash_command, rename = "opencritic_unsubscribe")]
+#[poise::command(
+    slash_command,
+    rename = "opencritic_unsubscribe",
+    default_member_permissions = "MANAGE_CHANNELS"
+)]
 pub async fn opencritic_unsubscribe(ctx: Context<'_>) -> Result<()> {
     let removed =
         delete_opencritic_subscription(&ctx.data().db, &ctx.channel_id().to_string()).await?;
@@ -133,146 +158,23 @@ pub async fn opencritic_unsubscribe(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-#[poise::command(slash_command, rename = "opencritic_test_post")]
-pub async fn opencritic_test_post(ctx: Context<'_>) -> Result<()> {
-    ctx.defer_ephemeral().await?;
-
-    let Some(stored_game) = random_baseline_suppressed_opencritic_game(&ctx.data().db).await?
-    else {
-        ctx.send(
-            CreateReply::default()
-                .content(
-                    "No baseline-suppressed OpenCritic games found. Let the baseline poll run, \
-                    or run /opencritic_check first, then try again.",
-                )
-                .ephemeral(true),
-        )
-        .await?;
-        return Ok(());
-    };
-
-    let data = ctx.data();
-    let mut game = data
-        .opencritic_client
-        .fetch_game(stored_game.id)
-        .await
-        .context("Failed to fetch sample OpenCritic game details")?;
-    game.fill_missing_from(&stored_game);
-    let game_name = game.name.clone();
-
-    send_opencritic_announcement(
-        ctx.serenity_context().http.as_ref(),
-        ctx.channel_id(),
-        &game,
-    )
-    .await
-    .context("Failed to post sample OpenCritic announcement")?;
-
-    ctx.send(
-        CreateReply::default()
-            .content(format!(
-                "Posted sample OpenCritic alert for {game_name}. No decisions or announcements were recorded."
-            ))
-            .ephemeral(true),
-    )
-    .await?;
-
-    Ok(())
-}
-
-#[poise::command(slash_command, rename = "opencritic_check")]
-pub async fn check_opencritic(
-    ctx: Context<'_>,
-    #[description = "Post new qualifying games to subscribed channels instead of only reporting what would happen"]
-    post: Option<bool>,
-) -> Result<()> {
-    ctx.defer().await?;
-
-    let post = post.unwrap_or(false);
-    let data = ctx.data();
-    let mode = if post {
-        PollMode::Live {
-            http: ctx.serenity_context().http.as_ref(),
-        }
-    } else {
-        PollMode::DryRun
-    };
-
-    let outcome =
-        run_opencritic_poll(&data.db, &data.opencritic_client, &data.config, mode).await?;
-
-    let mode_label = if post { "post" } else { "dry-run" };
-    let baseline = if outcome.baseline_created {
-        "created baseline; posted nothing"
-    } else if outcome.baseline_completed_before_run {
-        "already complete"
-    } else {
-        unreachable!("OpenCritic baseline is unexpectedly incomplete after poll")
-    };
-    let rate_limit = outcome.rate_limit_remaining.as_deref().unwrap_or("unknown");
-
-    ctx.say(format!(
-        "OpenCritic check complete ({mode_label}).\n\
-        Years: {:?}\n\
-        Pages requested: {}\n\
-        RapidAPI requests remaining: {}\n\
-        Active subscriptions: {}\n\
-        Baseline: {}\n\
-        Qualifying games found: {}\n\
-        Baseline suppressed: {}\n\
-        Existing decisions skipped: {}\n\
-        Would handle games: {}\n\
-        Handled games: {}\n\
-        Messages sent: {}",
-        outcome.years,
-        outcome.pages_requested,
-        rate_limit,
-        outcome.active_subscriptions,
-        baseline,
-        outcome.qualifying_games,
-        outcome.baseline_suppressed,
-        outcome.skipped_existing_decision,
-        outcome.would_handle_games,
-        outcome.handled_games,
-        outcome.messages_sent,
-    ))
-    .await?;
-
-    Ok(())
-}
-
 #[poise::command(slash_command, rename = "opencritic_status")]
 pub async fn opencritic_status(ctx: Context<'_>) -> Result<()> {
     let data = ctx.data();
-    let (baseline_suppressed, handled_games, subscriptions, announcement_deliveries) =
-        count_opencritic_decisions(&data.db).await?;
-    let rate_limit = data
-        .opencritic_client
-        .last_rate_limit_remaining()
-        .unwrap_or_else(|| "unknown (no API call yet)".to_string());
+    let channel_id = ctx.channel_id().to_string();
 
-    ctx.say(format!(
-        "OpenCritic status:\n\
-        Threshold: {:.1}\n\
-        Minimum reviews: {}\n\
-        Scan previous year: {}\n\
-        Poll interval: {}\n\
-        Last seen RapidAPI requests remaining: {}\n\
-        Active subscriptions: {}\n\
-        Baseline suppressed decisions: {}\n\
-        Handled qualifying games: {}\n\
-        Announcement deliveries: {}",
-        data.config.opencritic_threshold,
-        data.config.opencritic_min_reviews,
-        data.config.opencritic_scan_previous_year,
-        humanize_duration(data.config.opencritic_poll_interval),
-        rate_limit,
-        subscriptions,
-        baseline_suppressed,
-        handled_games,
-        announcement_deliveries,
-    ))
-    .await?;
+    let subscription = get_opencritic_subscription(&data.db, &channel_id).await?;
+
+    let message = match subscription {
+        Some(sub) => format!(
+            "OpenCritic alerts are enabled in this channel.\n\
+            Threshold: {:.1} | Minimum reviews: {}",
+            sub.threshold, sub.min_reviews
+        ),
+        None => "OpenCritic alerts are not enabled in this channel. Use /opencritic_subscribe to enable them.".to_string(),
+    };
+
+    ctx.say(message).await?;
 
     Ok(())
 }

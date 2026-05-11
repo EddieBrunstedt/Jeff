@@ -3,7 +3,11 @@ use std::time::Instant;
 use anyhow::Result;
 use chrono::Utc;
 
-use crate::{context::Context, db::ping, util::humanize_duration};
+use crate::{
+    context::Context,
+    db::{count_opencritic_subscriptions, ping},
+    util::humanize_duration,
+};
 
 #[poise::command(slash_command)]
 pub async fn healthcheck(ctx: Context<'_>) -> Result<()> {
@@ -39,6 +43,8 @@ pub async fn healthcheck(ctx: Context<'_>) -> Result<()> {
         .last_rate_limit_remaining()
         .unwrap_or_else(|| "unknown (no API call yet)".to_string());
 
+    let active_subscriptions = count_opencritic_subscriptions(&data.db).await?;
+
     let last_poll = data.last_poll.lock().unwrap().clone();
     let last_poll_str = match last_poll {
         Some(snap) => {
@@ -47,29 +53,27 @@ pub async fn healthcheck(ctx: Context<'_>) -> Result<()> {
                 .to_std()
                 .unwrap_or_default();
             format!(
-                "{} ago — qualifying: {}, handled: {}, messages: {}, pages: {}, baseline_created: {}",
+                "{} ago — {} alert(s) posted",
                 humanize_duration(ago),
-                snap.outcome.qualifying_games,
-                snap.outcome.handled_games,
-                snap.outcome.messages_sent,
-                snap.outcome.pages_requested,
-                snap.outcome.baseline_created,
+                snap.outcome.messages_sent
             )
         }
-        None => "no successful poll yet".to_string(),
+        None => "none yet".to_string(),
     };
 
     ctx.say(format!(
-        "Healthcheck:\n\
+        "Health check:\n\
         Uptime: {}\n\
-        DB: {}\n\
+        Database: {}\n\
         Discord gateway latency: {}\n\
-        Last seen RapidAPI requests remaining: {}\n\
+        OpenCritic API quota remaining: {}\n\
+        Active subscriptions: {}\n\
         Last successful poll: {}",
         humanize_duration(uptime),
         db_status,
         latency_str,
         rate_limit,
+        active_subscriptions,
         last_poll_str,
     ))
     .await?;
