@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -8,6 +11,7 @@ use serde::Deserialize;
 pub struct OpenCriticClient {
     http: reqwest::Client,
     rapidapi_key: String,
+    last_rate_limit_remaining: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +51,12 @@ impl OpenCriticClient {
         Self {
             http: reqwest::Client::new(),
             rapidapi_key,
+            last_rate_limit_remaining: Arc::new(Mutex::new(None)),
         }
+    }
+
+    pub fn last_rate_limit_remaining(&self) -> Option<String> {
+        self.last_rate_limit_remaining.lock().unwrap().clone()
     }
 
     pub async fn scan_years(
@@ -155,6 +164,9 @@ impl OpenCriticClient {
             .get("x-ratelimit-requests-remaining")
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned);
+        if let Some(value) = &rate_limit_remaining {
+            *self.last_rate_limit_remaining.lock().unwrap() = Some(value.clone());
+        }
 
         if !status.is_success() {
             let body = response

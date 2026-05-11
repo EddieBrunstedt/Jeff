@@ -12,7 +12,7 @@ use crate::{
     poller::{PollMode, rebaseline_for_first_subscriber, run_opencritic_poll},
 };
 
-#[poise::command(slash_command, prefix_command, rename = "opencritic_subscribe")]
+#[poise::command(slash_command, rename = "opencritic_subscribe")]
 pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     let guild_id = ctx
         .guild_id()
@@ -72,7 +72,7 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, rename = "opencritic_suppressed")]
+#[poise::command(slash_command, rename = "opencritic_suppressed")]
 pub async fn opencritic_suppressed(ctx: Context<'_>) -> Result<()> {
     let data = ctx.data();
     let rows = list_baseline_suppressed_opencritic(&data.db).await?;
@@ -108,7 +108,7 @@ pub async fn opencritic_suppressed(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, rename = "opencritic_unsubscribe")]
+#[poise::command(slash_command, rename = "opencritic_unsubscribe")]
 pub async fn opencritic_unsubscribe(ctx: Context<'_>) -> Result<()> {
     let removed =
         delete_opencritic_subscription(&ctx.data().db, &ctx.channel_id().to_string()).await?;
@@ -124,7 +124,7 @@ pub async fn opencritic_unsubscribe(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, rename = "opencritic_check")]
+#[poise::command(slash_command, rename = "opencritic_check")]
 pub async fn check_opencritic(
     ctx: Context<'_>,
     #[description = "Post new qualifying games to subscribed channels instead of only reporting what would happen"]
@@ -185,18 +185,23 @@ pub async fn check_opencritic(
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command, rename = "opencritic_status")]
+#[poise::command(slash_command, rename = "opencritic_status")]
 pub async fn opencritic_status(ctx: Context<'_>) -> Result<()> {
     let data = ctx.data();
     let (baseline_suppressed, handled_games, subscriptions, announcement_deliveries) =
         count_opencritic_decisions(&data.db).await?;
+    let rate_limit = data
+        .opencritic_client
+        .last_rate_limit_remaining()
+        .unwrap_or_else(|| "unknown (no API call yet)".to_string());
 
     ctx.say(format!(
         "OpenCritic status:\n\
         Threshold: {:.1}\n\
         Minimum reviews: {}\n\
         Scan previous year: {}\n\
-        Poll interval: {} seconds\n\
+        Poll interval: {}\n\
+        Last seen RapidAPI requests remaining: {}\n\
         Active subscriptions: {}\n\
         Baseline suppressed decisions: {}\n\
         Handled qualifying games: {}\n\
@@ -204,7 +209,8 @@ pub async fn opencritic_status(ctx: Context<'_>) -> Result<()> {
         data.config.opencritic_threshold,
         data.config.opencritic_min_reviews,
         data.config.opencritic_scan_previous_year,
-        data.config.opencritic_poll_interval.as_secs(),
+        humanize_duration(data.config.opencritic_poll_interval),
+        rate_limit,
         subscriptions,
         baseline_suppressed,
         handled_games,
@@ -213,4 +219,18 @@ pub async fn opencritic_status(ctx: Context<'_>) -> Result<()> {
     .await?;
 
     Ok(())
+}
+
+fn humanize_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    match (h, m, s) {
+        (0, 0, s) => format!("{s}s"),
+        (0, m, 0) => format!("{m}m"),
+        (0, m, s) => format!("{m}m {s}s"),
+        (h, 0, _) => format!("{h}h"),
+        (h, m, _) => format!("{h}h {m}m"),
+    }
 }

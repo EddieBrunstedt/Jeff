@@ -1,21 +1,31 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::{Datelike, Utc};
-use poise::serenity_prelude as serenity;
+use poise::serenity_prelude::{self as serenity, HttpError};
 use sqlx::SqlitePool;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
     db::{
-        DecisionStatus, insert_opencritic_announcement, insert_opencritic_decision,
-        is_opencritic_baseline_complete, list_opencritic_subscriptions,
+        DecisionStatus, delete_opencritic_subscription, insert_opencritic_announcement,
+        insert_opencritic_decision, is_opencritic_baseline_complete, list_opencritic_subscriptions,
         mark_opencritic_baseline_complete, opencritic_announcement_exists,
         opencritic_decision_exists,
     },
     opencritic::{OpenCriticClient, OpenCriticGame},
 };
+
+const DISCORD_UNKNOWN_CHANNEL: isize = 10003;
+
+fn is_channel_gone_error(err: &serenity::Error) -> bool {
+    matches!(
+        err,
+        serenity::Error::Http(HttpError::UnsuccessfulRequest(resp))
+            if resp.error.code == DISCORD_UNKNOWN_CHANNEL
+    )
+}
 
 #[derive(Debug)]
 pub struct PollOutcome {
@@ -88,6 +98,7 @@ pub async fn run_opencritic_poll(
     let mut messages_sent = 0;
     let mut would_handle_games = 0;
     let mut skipped_existing_decision = 0;
+    let mut removed_channels: HashSet<String> = HashSet::new();
 
     for game in &scan.games {
         if opencritic_decision_exists(pool, game.id).await? {
@@ -106,38 +117,59 @@ pub async fn run_opencritic_poll(
                 }
 
                 for subscription in &subscriptions {
+                    if removed_channels.contains(&subscription.channel_id) {
+                        continue;
+                    }
                     if opencritic_announcement_exists(pool, game.id, &subscription.channel_id)
                         .await?
                     {
                         continue;
                     }
 
-                    let channel_id = subscription
-                        .channel_id
-                        .parse::<u64>()
-                        .map(serenity::ChannelId::new)
-                        .with_context(|| {
-                            format!("Invalid subscribed channel ID {}", subscription.channel_id)
-                        })?;
+                    let channel_id = match subscription.channel_id.parse::<u64>() {
+                        Ok(id) => serenity::ChannelId::new(id),
+                        Err(err) => {
+                            error!(
+                                channel = %subscription.channel_id,
+                                error = %err,
+                                "Invalid subscribed channel ID; skipping for this poll"
+                            );
+                            continue;
+                        }
+                    };
 
                     let message = format_opencritic_announcement(game);
-                    let sent_message = channel_id.say(http, message).await.with_context(|| {
-                        format!(
-                            "Failed to announce OpenCritic game {} in channel {}",
-                            game.id, subscription.channel_id
-                        )
-                    })?;
-
-                    insert_opencritic_announcement(
-                        pool,
-                        game.id,
-                        &subscription.guild_id,
-                        &subscription.channel_id,
-                        &sent_message.id.to_string(),
-                        &now,
-                    )
-                    .await?;
-                    messages_sent += 1;
+                    match channel_id.say(http, message).await {
+                        Ok(sent_message) => {
+                            insert_opencritic_announcement(
+                                pool,
+                                game.id,
+                                &subscription.guild_id,
+                                &subscription.channel_id,
+                                &sent_message.id.to_string(),
+                                &now,
+                            )
+                            .await?;
+                            messages_sent += 1;
+                        }
+                        Err(err) if is_channel_gone_error(&err) => {
+                            warn!(
+                                channel = %subscription.channel_id,
+                                game_id = game.id,
+                                "Discord reports channel is gone (10003); auto-unsubscribing"
+                            );
+                            delete_opencritic_subscription(pool, &subscription.channel_id).await?;
+                            removed_channels.insert(subscription.channel_id.clone());
+                        }
+                        Err(err) => {
+                            error!(
+                                channel = %subscription.channel_id,
+                                game_id = game.id,
+                                error = %err,
+                                "Failed to post OpenCritic announcement; continuing"
+                            );
+                        }
+                    }
                 }
 
                 insert_opencritic_decision(pool, game, DecisionStatus::Announced, &now).await?;
@@ -240,6 +272,7 @@ pub fn spawn_opencritic_background_poll(
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(config.opencritic_poll_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             interval.tick().await;
