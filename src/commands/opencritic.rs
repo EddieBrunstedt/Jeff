@@ -1,11 +1,13 @@
 use anyhow::{Context as _, Result};
 use chrono::Utc;
+use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
     context::Context,
     db::{
         count_opencritic_decisions, delete_opencritic_subscription, is_opencritic_baseline_complete,
-        list_opencritic_subscriptions, upsert_opencritic_subscription,
+        list_baseline_suppressed_opencritic, list_opencritic_subscriptions,
+        upsert_opencritic_subscription,
     },
     poller::{PollMode, rebaseline_for_first_subscriber, run_opencritic_poll},
 };
@@ -66,6 +68,42 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     };
 
     ctx.say(reply).await?;
+
+    Ok(())
+}
+
+#[poise::command(slash_command, prefix_command, rename = "opencritic_suppressed")]
+pub async fn opencritic_suppressed(ctx: Context<'_>) -> Result<()> {
+    let data = ctx.data();
+    let rows = list_baseline_suppressed_opencritic(&data.db).await?;
+
+    if rows.is_empty() {
+        ctx.say("No baseline-suppressed OpenCritic games in the database.")
+            .await?;
+        return Ok(());
+    }
+
+    let mut body = format!(
+        "Baseline-suppressed OpenCritic games ({} total, sorted by score)\n\n",
+        rows.len()
+    );
+    for row in &rows {
+        let url = row.url.as_deref().unwrap_or("");
+        body.push_str(&format!(
+            "- {} (score {:.1}, {} reviews) {}\n",
+            row.name, row.score, row.review_count, url
+        ));
+    }
+
+    let attachment =
+        serenity::CreateAttachment::bytes(body.into_bytes(), "opencritic_suppressed.txt");
+    let reply = CreateReply::default()
+        .content(format!(
+            "Baseline-suppressed OpenCritic games: {} total. See attachment.",
+            rows.len()
+        ))
+        .attachment(attachment);
+    ctx.send(reply).await?;
 
     Ok(())
 }

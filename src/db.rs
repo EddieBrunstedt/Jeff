@@ -27,6 +27,14 @@ pub struct FeatureSubscription {
     pub channel_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SuppressedDecision {
+    pub name: String,
+    pub url: Option<String>,
+    pub score: f64,
+    pub review_count: i64,
+}
+
 pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -284,6 +292,32 @@ pub async fn insert_opencritic_announcement(
     .context("Failed to store OpenCritic announcement")?;
 
     Ok(())
+}
+
+pub async fn list_baseline_suppressed_opencritic(
+    pool: &SqlitePool,
+) -> Result<Vec<SuppressedDecision>> {
+    let rows: Vec<(String, Option<String>, f64, i64)> = sqlx::query_as(
+        r#"
+        SELECT name, url, score, review_count
+        FROM opencritic_decisions
+        WHERE status = 'baseline_suppressed'
+        ORDER BY score DESC
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to list baseline-suppressed OpenCritic games")?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(name, url, score, review_count)| SuppressedDecision {
+            name,
+            url,
+            score,
+            review_count,
+        })
+        .collect())
 }
 
 pub async fn count_opencritic_decisions(pool: &SqlitePool) -> Result<(i64, i64, i64, i64)> {
