@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
+use chrono::Utc;
 use poise::serenity_prelude as serenity;
 use tracing::{error, info};
 
@@ -11,6 +12,7 @@ mod db;
 mod opencritic;
 mod poller;
 mod tracing;
+mod util;
 
 use config::Config;
 use context::Data;
@@ -89,12 +91,14 @@ async fn initialize_bot_data(
 
     let db = db::connect_and_migrate(&config.database_url).await?;
     let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
+    let last_poll = Arc::new(Mutex::new(None));
 
     poller::spawn_opencritic_background_poll(
         Arc::clone(&ctx.http),
         db.clone(),
         opencritic_client.clone(),
         Arc::clone(&config),
+        Arc::clone(&last_poll),
     );
     info!("Started OpenCritic background poller");
 
@@ -104,5 +108,7 @@ async fn initialize_bot_data(
         config,
         db,
         opencritic_client,
+        started_at: Utc::now(),
+        last_poll,
     })
 }

@@ -107,6 +107,14 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+pub async fn ping(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("SELECT 1")
+        .execute(pool)
+        .await
+        .context("Database ping failed")?;
+    Ok(())
+}
+
 pub async fn is_opencritic_baseline_complete(pool: &SqlitePool) -> Result<bool> {
     let value: Option<(String,)> = sqlx::query_as("SELECT value FROM bot_meta WHERE key = ?")
         .bind(BASELINE_COMPLETED_KEY)

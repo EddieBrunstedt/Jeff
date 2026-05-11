@@ -5,11 +5,12 @@ use poise::{CreateReply, serenity_prelude as serenity};
 use crate::{
     context::Context,
     db::{
-        count_opencritic_decisions, delete_opencritic_subscription, is_opencritic_baseline_complete,
-        list_baseline_suppressed_opencritic, list_opencritic_subscriptions,
-        upsert_opencritic_subscription,
+        count_opencritic_decisions, delete_opencritic_subscription,
+        is_opencritic_baseline_complete, list_baseline_suppressed_opencritic,
+        list_opencritic_subscriptions, upsert_opencritic_subscription,
     },
     poller::{PollMode, rebaseline_for_first_subscriber, run_opencritic_poll},
+    util::humanize_duration,
 };
 
 #[poise::command(slash_command, rename = "opencritic_subscribe")]
@@ -32,7 +33,10 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
     }
 
     let rebaseline = if needs_rebaseline {
-        Some(rebaseline_for_first_subscriber(&data.db, &data.opencritic_client, &data.config).await?)
+        Some(
+            rebaseline_for_first_subscriber(&data.db, &data.opencritic_client, &data.config)
+                .await?,
+        )
     } else {
         None
     };
@@ -53,7 +57,8 @@ pub async fn opencritic_subscribe(ctx: Context<'_>) -> Result<()> {
             crossings will be posted here."
             .to_string(),
         (true, true) => {
-            let outcome = rebaseline.expect("rebaseline runs when first subscriber + baseline complete");
+            let outcome =
+                rebaseline.expect("rebaseline runs when first subscriber + baseline complete");
             let rate_limit = outcome.rate_limit_remaining.as_deref().unwrap_or("unknown");
             format!(
                 "OpenCritic alerts enabled. Snapshotted {} currently-qualifying games as \
@@ -219,18 +224,4 @@ pub async fn opencritic_status(ctx: Context<'_>) -> Result<()> {
     .await?;
 
     Ok(())
-}
-
-fn humanize_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    match (h, m, s) {
-        (0, 0, s) => format!("{s}s"),
-        (0, m, 0) => format!("{m}m"),
-        (0, m, s) => format!("{m}m {s}s"),
-        (h, 0, _) => format!("{h}h"),
-        (h, m, _) => format!("{h}h {m}m"),
-    }
 }

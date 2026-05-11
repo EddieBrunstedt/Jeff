@@ -1,7 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Result;
-use chrono::{Datelike, Utc};
+use chrono::{DateTime, Datelike, Utc};
 use poise::serenity_prelude::{self as serenity, HttpError};
 use sqlx::SqlitePool;
 use tracing::{error, info, warn};
@@ -27,7 +30,7 @@ fn is_channel_gone_error(err: &serenity::Error) -> bool {
     )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PollOutcome {
     pub baseline_completed_before_run: bool,
     pub baseline_created: bool,
@@ -46,6 +49,12 @@ pub struct PollOutcome {
 pub enum PollMode<'a> {
     DryRun,
     Live { http: &'a serenity::Http },
+}
+
+#[derive(Debug, Clone)]
+pub struct LastPollSnapshot {
+    pub at: DateTime<Utc>,
+    pub outcome: PollOutcome,
 }
 
 pub async fn run_opencritic_poll(
@@ -269,6 +278,7 @@ pub fn spawn_opencritic_background_poll(
     pool: SqlitePool,
     client: OpenCriticClient,
     config: Arc<Config>,
+    last_poll: Arc<Mutex<Option<LastPollSnapshot>>>,
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(config.opencritic_poll_interval);
@@ -292,6 +302,10 @@ pub fn spawn_opencritic_background_poll(
                         rate_limit_remaining = outcome.rate_limit_remaining.as_deref(),
                         "Background OpenCritic poll complete"
                     );
+                    *last_poll.lock().unwrap() = Some(LastPollSnapshot {
+                        at: Utc::now(),
+                        outcome,
+                    });
                 }
                 Err(err) => {
                     error!(error = %err, "Background OpenCritic poll failed");
