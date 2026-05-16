@@ -11,6 +11,8 @@ pub struct Config {
     pub rapidapi_key: String,
     pub database_url: String,
     pub opencritic_poll_interval: Duration,
+    pub enable_debug_post: bool,
+    pub disable_polling: bool,
 }
 
 impl Config {
@@ -36,6 +38,16 @@ impl Config {
                 .parse()
                 .context("OPENCRITIC_POLL_INTERVAL_SECONDS must be a valid integer")?;
 
+        let enable_debug_post = std::env::var("JEFF_ENABLE_DEBUG_POST")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .context("JEFF_ENABLE_DEBUG_POST must be a valid boolean")?;
+
+        let disable_polling = std::env::var("JEFF_DISABLE_POLLING")
+            .unwrap_or_else(|_| "false".to_string())
+            .parse()
+            .context("JEFF_DISABLE_POLLING must be a valid boolean")?;
+
         Ok(Config {
             discord_token,
             guild_id,
@@ -43,6 +55,8 @@ impl Config {
             rapidapi_key,
             database_url,
             opencritic_poll_interval: Duration::from_secs(opencritic_poll_interval_seconds),
+            enable_debug_post,
+            disable_polling,
         })
     }
 }

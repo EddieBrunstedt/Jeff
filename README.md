@@ -26,7 +26,13 @@ Optional:
 ```text
 DATABASE_URL=sqlite://jeff.sqlite?mode=rwc
 PRETTY_LOG=false
+JEFF_ENABLE_DEBUG_POST=false
+JEFF_DISABLE_POLLING=false
 ```
+
+`JEFF_ENABLE_DEBUG_POST=true` registers the `/jeff debug_post` subcommand. It posts three bundled fixture games to the current channel so the alert layout can be iterated on without consuming RapidAPI quota.
+
+`JEFF_DISABLE_POLLING=true` skips spawning the background OpenCritic poller. Useful during local development so restarts don't burn RapidAPI quota on automatic scans. Slash commands and the Refresh button still work.
 
 ## Build and run
 

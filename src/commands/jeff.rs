@@ -2,6 +2,7 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use chrono::Utc;
+use tracing::error;
 
 use crate::{
     context::Context,
@@ -9,9 +10,25 @@ use crate::{
         delete_opencritic_subscription, get_opencritic_subscription,
         insert_opencritic_subscription, ping, update_opencritic_subscription_settings,
     },
-    poller::rebaseline,
+    opencritic::OpenCriticGame,
+    poller::{rebaseline, send_opencritic_announcement},
     util::humanize_duration,
 };
+
+const DEBUG_FIXTURES: &[(&str, &str)] = &[
+    (
+        "game_17732",
+        include_str!("../../fixtures/opencritic/game_17732.json"),
+    ),
+    (
+        "game_463",
+        include_str!("../../fixtures/opencritic/game_463.json"),
+    ),
+    (
+        "game_20559",
+        include_str!("../../fixtures/opencritic/game_20559.json"),
+    ),
+];
 
 #[poise::command(
     slash_command,
@@ -192,6 +209,48 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
 
     ctx.say(message).await?;
 
+    Ok(())
+}
+
+#[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
+pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
+    ctx.defer().await?;
+
+    let channel_id = ctx.channel_id();
+    let http = ctx.serenity_context().http.clone();
+
+    let mut posted = 0;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (label, raw) in DEBUG_FIXTURES {
+        let game: OpenCriticGame = match serde_json::from_str(raw) {
+            Ok(game) => game,
+            Err(err) => {
+                error!(fixture = label, error = %err, "debug_post: failed to parse fixture");
+                failures.push(format!("{label}: parse failed ({err})"));
+                continue;
+            }
+        };
+
+        if let Err(err) = send_opencritic_announcement(&http, channel_id, &game).await {
+            error!(fixture = label, error = %err, "debug_post: failed to send");
+            failures.push(format!("{label}: send failed ({err})"));
+            continue;
+        }
+
+        posted += 1;
+    }
+
+    let summary = if failures.is_empty() {
+        format!("Posted {posted} debug fixture(s).")
+    } else {
+        format!(
+            "Posted {posted} debug fixture(s). Failures:\n{}",
+            failures.join("\n")
+        )
+    };
+
+    ctx.say(summary).await?;
     Ok(())
 }
 

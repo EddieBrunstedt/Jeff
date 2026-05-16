@@ -38,9 +38,15 @@ async fn run_bot(config: Config) -> Result<()> {
     let framework = {
         let config = Arc::clone(&config);
 
+        let mut jeff_command = commands::jeff::jeff();
+        if config.enable_debug_post {
+            jeff_command.subcommands.push(commands::jeff::debug_post());
+            info!("JEFF_ENABLE_DEBUG_POST is true; registering /jeff debug_post subcommand");
+        }
+
         poise::Framework::builder()
             .options(poise::FrameworkOptions {
-                commands: vec![commands::jeff::jeff()],
+                commands: vec![jeff_command],
                 event_handler: |ctx, event, _framework, data| {
                     Box::pin(handle_event(ctx, event, data))
                 },
@@ -99,14 +105,18 @@ async fn initialize_bot_data(
     let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
     let last_poll = Arc::new(Mutex::new(None));
 
-    poller::spawn_opencritic_background_poll(
-        Arc::clone(&ctx.http),
-        db.clone(),
-        opencritic_client.clone(),
-        Arc::clone(&config),
-        Arc::clone(&last_poll),
-    );
-    info!("Started OpenCritic background poller");
+    if config.disable_polling {
+        info!("JEFF_DISABLE_POLLING is true; background poller will not be started");
+    } else {
+        poller::spawn_opencritic_background_poll(
+            Arc::clone(&ctx.http),
+            db.clone(),
+            opencritic_client.clone(),
+            Arc::clone(&config),
+            Arc::clone(&last_poll),
+        );
+        info!("Started OpenCritic background poller");
+    }
 
     info!("Bot initialization complete");
 
