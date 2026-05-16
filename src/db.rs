@@ -23,6 +23,7 @@ pub struct OpenCriticSubscription {
     pub channel_id: String,
     pub threshold: f64,
     pub min_reviews: i64,
+    pub min_percent_recommended: f64,
 }
 
 pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
@@ -56,7 +57,8 @@ pub async fn connect_and_migrate(database_url: &str) -> Result<SqlitePool> {
           id INTEGER PRIMARY KEY CHECK (id = 1),
           channel_id TEXT NOT NULL,
           threshold REAL NOT NULL,
-          min_reviews INTEGER NOT NULL
+          min_reviews INTEGER NOT NULL,
+          min_percent_recommended REAL NOT NULL
         )
         "#,
     )
@@ -126,18 +128,19 @@ pub async fn insert_opencritic_decision(
 pub async fn get_opencritic_subscription(
     pool: &SqlitePool,
 ) -> Result<Option<OpenCriticSubscription>> {
-    let row: Option<(String, f64, i64)> = sqlx::query_as(
-        "SELECT channel_id, threshold, min_reviews FROM opencritic_subscription WHERE id = 1",
+    let row: Option<(String, f64, i64, f64)> = sqlx::query_as(
+        "SELECT channel_id, threshold, min_reviews, min_percent_recommended FROM opencritic_subscription WHERE id = 1",
     )
     .fetch_optional(pool)
     .await
     .context("Failed to load OpenCritic subscription")?;
 
     Ok(row.map(
-        |(channel_id, threshold, min_reviews)| OpenCriticSubscription {
+        |(channel_id, threshold, min_reviews, min_percent_recommended)| OpenCriticSubscription {
             channel_id,
             threshold,
             min_reviews,
+            min_percent_recommended,
         },
     ))
 }
@@ -147,13 +150,15 @@ pub async fn insert_opencritic_subscription(
     channel_id: &str,
     threshold: f64,
     min_reviews: i64,
+    min_percent_recommended: f64,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO opencritic_subscription (id, channel_id, threshold, min_reviews) VALUES (1, ?, ?, ?)",
+        "INSERT INTO opencritic_subscription (id, channel_id, threshold, min_reviews, min_percent_recommended) VALUES (1, ?, ?, ?, ?)",
     )
     .bind(channel_id)
     .bind(threshold)
     .bind(min_reviews)
+    .bind(min_percent_recommended)
     .execute(pool)
     .await
     .context("Failed to store OpenCritic subscription")?;
@@ -165,12 +170,14 @@ pub async fn update_opencritic_subscription_settings(
     pool: &SqlitePool,
     threshold: f64,
     min_reviews: i64,
+    min_percent_recommended: f64,
 ) -> Result<bool> {
     let result = sqlx::query(
-        "UPDATE opencritic_subscription SET threshold = ?, min_reviews = ? WHERE id = 1",
+        "UPDATE opencritic_subscription SET threshold = ?, min_reviews = ?, min_percent_recommended = ? WHERE id = 1",
     )
     .bind(threshold)
     .bind(min_reviews)
+    .bind(min_percent_recommended)
     .execute(pool)
     .await
     .context("Failed to update OpenCritic subscription settings")?;

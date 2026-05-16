@@ -72,6 +72,20 @@ pub struct OpenCriticPlatform {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct OpenCriticGenre {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenCriticCompany {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default, rename = "type")]
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct OpenCriticGame {
     pub id: i64,
     pub name: String,
@@ -101,11 +115,26 @@ pub struct OpenCriticGame {
     pub tier: String,
     #[serde(default)]
     pub url: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, rename = "Genres", alias = "genres")]
+    pub genres: Vec<OpenCriticGenre>,
+    #[serde(default, rename = "Companies", alias = "companies")]
+    pub companies: Vec<OpenCriticCompany>,
+    #[serde(default, rename = "latestReviewDate")]
+    pub latest_review_date: Option<String>,
 }
 
 impl OpenCriticGame {
-    pub fn qualifies(&self, threshold: f64, minimum_reviews: i64) -> bool {
-        self.top_critic_score >= threshold && self.num_reviews >= minimum_reviews
+    pub fn qualifies(
+        &self,
+        threshold: f64,
+        minimum_reviews: i64,
+        minimum_percent_recommended: f64,
+    ) -> bool {
+        self.top_critic_score >= threshold
+            && self.num_reviews >= minimum_reviews
+            && self.percent_recommended >= minimum_percent_recommended
     }
 
     pub fn pc_release_date(&self) -> Option<&str> {
@@ -204,6 +233,61 @@ impl OpenCriticGame {
         if optional_string_is_empty(&self.url) {
             self.url = fallback.url.clone();
         }
+        if optional_string_is_empty(&self.description) {
+            self.description = fallback.description.clone();
+        }
+        if self.genres.is_empty() {
+            self.genres = fallback.genres.clone();
+        }
+        if self.companies.is_empty() {
+            self.companies = fallback.companies.clone();
+        }
+        if optional_string_is_empty(&self.latest_review_date) {
+            self.latest_review_date = fallback.latest_review_date.clone();
+        }
+    }
+
+    pub fn box_art_url(&self) -> Option<String> {
+        [
+            self.images.box_art.og.as_deref(),
+            self.images.box_art.lg.as_deref(),
+            self.images.box_art.md.as_deref(),
+            self.images.box_art.sm.as_deref(),
+            self.images.box_art.xs.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(normalize_opencritic_image_url)
+    }
+
+    pub fn genre_names(&self) -> Vec<&str> {
+        self.genres
+            .iter()
+            .filter_map(|genre| genre.name.as_deref())
+            .filter_map(non_empty_str)
+            .collect()
+    }
+
+    pub fn developers(&self) -> Vec<&str> {
+        self.companies_of_kind("DEVELOPER")
+    }
+
+    pub fn publishers(&self) -> Vec<&str> {
+        self.companies_of_kind("PUBLISHER")
+    }
+
+    fn companies_of_kind(&self, kind: &str) -> Vec<&str> {
+        self.companies
+            .iter()
+            .filter(|company| {
+                company
+                    .kind
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case(kind))
+            })
+            .filter_map(|company| company.name.as_deref())
+            .filter_map(non_empty_str)
+            .collect()
     }
 }
 
@@ -310,6 +394,7 @@ impl OpenCriticClient {
         years: &[i32],
         threshold: f64,
         minimum_reviews: i64,
+        minimum_percent_recommended: f64,
     ) -> Result<OpenCriticScan> {
         let mut games_by_id = HashMap::new();
         let mut pages_requested = 0;
@@ -317,7 +402,12 @@ impl OpenCriticClient {
 
         for year in years {
             let year_scan = self
-                .scan_year(*year, threshold, minimum_reviews)
+                .scan_year(
+                    *year,
+                    threshold,
+                    minimum_reviews,
+                    minimum_percent_recommended,
+                )
                 .await
                 .with_context(|| format!("Failed to scan OpenCritic year {year}"))?;
 
@@ -344,6 +434,7 @@ impl OpenCriticClient {
         year: i32,
         threshold: f64,
         minimum_reviews: i64,
+        minimum_percent_recommended: f64,
     ) -> Result<OpenCriticScan> {
         let mut games = Vec::new();
         let mut pages_requested = 0;
@@ -366,12 +457,9 @@ impl OpenCriticClient {
                 .unwrap_or_default();
             let page_len = response.games.len();
 
-            games.extend(
-                response
-                    .games
-                    .into_iter()
-                    .filter(|game| game.qualifies(threshold, minimum_reviews)),
-            );
+            games.extend(response.games.into_iter().filter(|game| {
+                game.qualifies(threshold, minimum_reviews, minimum_percent_recommended)
+            }));
 
             if page_len < 20 || last_score < threshold {
                 break;

@@ -1,0 +1,90 @@
+{
+    "images": {
+        "box": {
+            "og": "game/17732/o/LHqwrjq7.jpg",
+            "sm": "game/17732/UogRN5qd.jpg"
+        },
+        "square": {
+            "og": "game/17732/o/Ciu57um9.jpg",
+            "xs": "game/17732/qS3ZEA6Y.jpg",
+            "sm": "game/17732/7Wpq8V0K.jpg",
+            "lg": "game/17732/16ao1P5q.jpg"
+        },
+        "masthead": {
+            "og": "game/17732/o/ihXgfNRO.jpg",
+            "xs": "game/17732/YBNbyPpV.jpg",
+            "sm": "game/17732/1cJhZrpR.jpg",
+            "md": "game/17732/3fLXA4a4.jpg",
+            "lg": "game/17732/EeA9RWkY.jpg",
+            "xl": "game/17732/qaZHzvTZ.jpg"
+        },
+        "logo": {
+            "og": "game/17732/o/ge0ZEFF2.jpg"
+        },
+        "screenshots": []
+    },
+    "id": 17732,
+    "name": "Indiana Jones and the Great Circle",
+    "imageMigrationComplete": false,
+    "trailers": [],
+    "hasLootBoxes": false,
+    "Companies": [],
+    "firstReleaseDate": "2024-12-09T00:00:00.000Z",
+    "Platforms": [
+        {
+            "id": 3,
+            "name": "PlayStation 5",
+            "shortName": "PS5",
+            "imageSrc": "https://c.opencritic.com/images/platforms/ps5.png",
+            "releaseDate": "2024-12-09T00:00:00.000Z"
+        },
+        {
+            "id": 2,
+            "name": "Xbox Series X/S",
+            "shortName": "XBXS",
+            "imageSrc": "https://c.opencritic.com/images/platforms/xbxs.png",
+            "releaseDate": "2024-12-09T00:00:00.000Z"
+        },
+        {
+            "id": 27,
+            "name": "PC",
+            "shortName": "PC",
+            "imageSrc": "https://c.opencritic.com/images/platforms/pc.png",
+            "releaseDate": "2024-12-09T00:00:00.000Z"
+        },
+        {
+            "id": 39,
+            "name": "Nintendo Switch 2",
+            "shortName": "Switch 2",
+            "imageSrc": "https://img.opencritic.com/platforms/switch2.jpg",
+            "releaseDate": "2024-12-09T00:00:00.000Z"
+        }
+    ],
+    "tags": [
+        "6699556a534cfd6134a078d8",
+        "6699556b534cfd6134a078e0",
+        "6699556b534cfd6134a078e8",
+        "6699556a534cfd6134a078dc"
+    ],
+    "isMajorTitle": true,
+    "percentRecommended": 93.69369369369369,
+    "numReviews": 226,
+    "numTopCriticReviews": 108,
+    "medianScore": 90,
+    "topCriticScore": 86.33980582524272,
+    "percentile": 96,
+    "tier": "Mighty",
+    "isPre2015": false,
+    "biggestDiscountDollars": 0,
+    "biggestDiscountPercentage": 0,
+    "Genres": [],
+    "createdAt": "2024-11-25T21:08:03.555Z",
+    "updatedAt": "2026-05-15T19:44:03.755Z",
+    "monetizationFeatures": {
+        "hasLootBoxes": false
+    },
+    "firstReviewDate": "2024-12-05T00:00:00.000Z",
+    "latestReviewDate": "2026-05-15T00:00:00.000Z",
+    "criticalReviewDate": "2024-12-06T00:02:49.184Z",
+    "url": "https://opencritic.com/game/17732/indiana-jones-and-the-great-circle"
+}

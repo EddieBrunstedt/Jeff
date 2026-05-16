@@ -64,7 +64,12 @@ pub async fn run_opencritic_poll(
 
     let years = scan_years();
     let scan = client
-        .scan_years(&years, subscription.threshold, subscription.min_reviews)
+        .scan_years(
+            &years,
+            subscription.threshold,
+            subscription.min_reviews,
+            subscription.min_percent_recommended,
+        )
         .await?;
 
     let now = Utc::now().to_rfc3339();
@@ -92,7 +97,11 @@ pub async fn run_opencritic_poll(
     };
 
     for game in &scan.games {
-        if !game.qualifies(subscription.threshold, subscription.min_reviews) {
+        if !game.qualifies(
+            subscription.threshold,
+            subscription.min_reviews,
+            subscription.min_percent_recommended,
+        ) {
             continue;
         }
         if opencritic_decision_exists(pool, game.id).await? {
@@ -154,7 +163,12 @@ pub async fn rebaseline(
 ) -> Result<RebaselineOutcome> {
     let years = scan_years();
     let scan = client
-        .scan_years(&years, subscription.threshold, subscription.min_reviews)
+        .scan_years(
+            &years,
+            subscription.threshold,
+            subscription.min_reviews,
+            subscription.min_percent_recommended,
+        )
         .await?;
     let now = Utc::now().to_rfc3339();
     let mut newly_suppressed = 0;
@@ -170,38 +184,136 @@ pub async fn rebaseline(
     Ok(RebaselineOutcome { newly_suppressed })
 }
 
-pub fn format_opencritic_announcement(game: &OpenCriticGame) -> String {
-    let rounded_score = game.top_critic_score.round() as i64;
-    let recommended = if game.percent_recommended >= 0.0 {
-        format!("{:.0}%", game.percent_recommended)
-    } else {
-        "N/A".to_string()
-    };
-    let tier = if game.tier.is_empty() {
+const DESCRIPTION_MAX_LEN: usize = 400;
+pub const REFRESH_BUTTON_PREFIX: &str = "refresh_game:";
+
+pub fn build_opencritic_embed(game: &OpenCriticGame) -> serenity::CreateEmbed {
+    let url = game
+        .url
+        .as_deref()
+        .and_then(non_empty_str)
+        .unwrap_or("https://opencritic.com")
+        .to_string();
+
+    let mut embed = serenity::CreateEmbed::new()
+        .title(&game.name)
+        .url(url)
+        .author(serenity::CreateEmbedAuthor::new("OpenCritic").url("https://opencritic.com"));
+
+    if let Some(color) = embed_color_for_tier(&game.tier) {
+        embed = embed.colour(color);
+    }
+
+    if let Some(description) = game.description.as_deref().and_then(non_empty_str) {
+        embed = embed.description(truncate_description(description));
+    }
+
+    if let Some(image_url) = game.primary_image_url() {
+        embed = embed.image(image_url);
+    }
+
+    if let Some(box_art) = game.box_art_url() {
+        embed = embed.thumbnail(box_art);
+    }
+
+    let tier_value = if game.tier.is_empty() {
         "N/A".to_string()
     } else {
         game.tier.clone()
     };
+
+    embed = embed
+        .field(
+            "Critic Average",
+            format!("{:.1}", game.top_critic_score),
+            true,
+        )
+        .field(
+            "Recommended",
+            if game.percent_recommended >= 0.0 {
+                format!("{:.0}%", game.percent_recommended)
+            } else {
+                "N/A".to_string()
+            },
+            true,
+        )
+        .field("Reviews", game.num_reviews.to_string(), true)
+        .field("Tier", tier_value, true);
+
     let release_date = game
         .pc_release_date()
         .or_else(|| game.first_release_date.as_deref().and_then(non_empty_str))
         .map(format_opencritic_date)
         .unwrap_or_else(|| "unknown".to_string());
-    let url = game.url.as_deref().unwrap_or("https://opencritic.com");
-    let steam_search_url = steam_search_url(&game.name);
+    embed = embed.field("PC Release", release_date, true);
 
-    format!(
-        "## [{}]({}) reached {} on OpenCritic\n\n- **Top Critic Average:** {:.1}\n- **Recommended:** {}\n- **Reviews:** {}\n- **Tier:** {}\n- **Release date for PC:** {}\nSearch for the game on Steam [here]({}).",
-        game.name,
-        url,
-        rounded_score,
-        game.top_critic_score,
-        recommended,
-        game.num_reviews,
-        tier,
-        release_date,
-        steam_search_url,
-    )
+    let genres = game.genre_names();
+    if !genres.is_empty() {
+        embed = embed.field("Genres", genres.join(", "), true);
+    }
+
+    let developers = game.developers();
+    if !developers.is_empty() {
+        embed = embed.field("Developer", developers.join(", "), true);
+    }
+
+    let publishers = game.publishers();
+    if !publishers.is_empty() {
+        embed = embed.field("Publisher", publishers.join(", "), true);
+    }
+
+    embed = embed.field(
+        "Steam",
+        format!("[Search]({})", steam_search_url(&game.name)),
+        true,
+    );
+
+    if let Some(latest) = game
+        .latest_review_date
+        .as_deref()
+        .and_then(non_empty_str)
+        .map(format_opencritic_date)
+    {
+        embed = embed.footer(serenity::CreateEmbedFooter::new(format!(
+            "Latest review · {latest}"
+        )));
+    }
+
+    embed = embed.timestamp(Utc::now());
+
+    embed
+}
+
+pub fn build_refresh_action_row(game_id: i64) -> serenity::CreateActionRow {
+    serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(format!("{REFRESH_BUTTON_PREFIX}{game_id}"))
+            .label("Refresh")
+            .style(serenity::ButtonStyle::Secondary),
+    ])
+}
+
+fn embed_color_for_tier(tier: &str) -> Option<serenity::Colour> {
+    match tier {
+        "Mighty" => Some(serenity::Colour::new(0xE6B800)),
+        "Strong" => Some(serenity::Colour::new(0x2ECC71)),
+        "Fair" => Some(serenity::Colour::new(0x3498DB)),
+        "Weak" => Some(serenity::Colour::new(0x95A5A6)),
+        _ => None,
+    }
+}
+
+fn truncate_description(value: &str) -> String {
+    if value.chars().count() <= DESCRIPTION_MAX_LEN {
+        return value.to_string();
+    }
+
+    let truncated: String = value.chars().take(DESCRIPTION_MAX_LEN).collect();
+    let cut_at = truncated
+        .rfind(char::is_whitespace)
+        .unwrap_or(truncated.len());
+    let mut result = truncated[..cut_at].trim_end().to_string();
+    result.push('…');
+    result
 }
 
 fn steam_search_url(game_name: &str) -> String {
@@ -241,28 +353,81 @@ pub async fn send_opencritic_announcement(
     channel_id: serenity::ChannelId,
     game: &OpenCriticGame,
 ) -> std::result::Result<serenity::Message, serenity::Error> {
-    let mut message = serenity::CreateMessage::new()
-        .content(format_opencritic_announcement(game))
-        .flags(serenity::MessageFlags::SUPPRESS_EMBEDS);
-
-    if let Some(image_url) = game.primary_image_url() {
-        match serenity::CreateAttachment::url(http, &image_url).await {
-            Ok(attachment) => {
-                message =
-                    message.add_file(attachment.description(format!("{} artwork", game.name)));
-            }
-            Err(err) => {
-                warn!(
-                    game_id = game.id,
-                    image_url = %image_url,
-                    error = %err,
-                    "Failed to fetch OpenCritic image; sending alert without attachment"
-                );
-            }
-        }
-    }
-
+    let message = serenity::CreateMessage::new()
+        .embed(build_opencritic_embed(game))
+        .components(vec![build_refresh_action_row(game.id)]);
     channel_id.send_message(http, message).await
+}
+
+pub async fn handle_refresh_button(
+    ctx: &serenity::Context,
+    interaction: &serenity::ComponentInteraction,
+    client: &OpenCriticClient,
+) -> Result<()> {
+    let Some(game_id_str) = interaction
+        .data
+        .custom_id
+        .strip_prefix(REFRESH_BUTTON_PREFIX)
+    else {
+        return Ok(());
+    };
+
+    let game_id: i64 = match game_id_str.parse() {
+        Ok(id) => id,
+        Err(err) => {
+            warn!(
+                custom_id = %interaction.data.custom_id,
+                error = %err,
+                "Refresh: failed to parse game id from custom_id"
+            );
+            return Ok(());
+        }
+    };
+
+    info!(
+        game_id,
+        message_id = %interaction.message.id,
+        user_id = %interaction.user.id,
+        "Refresh requested"
+    );
+
+    interaction
+        .create_response(&ctx.http, serenity::CreateInteractionResponse::Acknowledge)
+        .await
+        .context("Failed to acknowledge refresh interaction")?;
+
+    let game = match client.fetch_game(game_id).await {
+        Ok(game) => game,
+        Err(err) => {
+            error!(game_id, error = %err, "Refresh: failed to fetch game");
+            interaction
+                .create_followup(
+                    &ctx.http,
+                    serenity::CreateInteractionResponseFollowup::new()
+                        .content(format!("Failed to refresh game {game_id}: {err}"))
+                        .ephemeral(true),
+                )
+                .await
+                .context("Failed to send refresh error followup")?;
+            return Ok(());
+        }
+    };
+
+    interaction
+        .channel_id
+        .edit_message(
+            &ctx.http,
+            interaction.message.id,
+            serenity::EditMessage::new()
+                .embed(build_opencritic_embed(&game))
+                .components(vec![build_refresh_action_row(game.id)]),
+        )
+        .await
+        .context("Failed to edit refreshed announcement")?;
+
+    info!(game_id, "Refresh completed");
+
+    Ok(())
 }
 
 pub fn spawn_opencritic_background_poll(

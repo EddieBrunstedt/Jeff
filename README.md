@@ -39,16 +39,16 @@ Slash commands are registered to the guild specified by `GUILD_ID` on startup. T
 ## Commands
 
 ```text
-/jeff subscribe score:<n> [min_reviews:<n>]
-/jeff threshold score:<n> [min_reviews:<n>]
+/jeff subscribe score:<n> min_reviews:<n> min_recommended:<n>
+/jeff threshold [score:<n>] [min_reviews:<n>] [min_recommended:<n>]
 /jeff unsubscribe
 /jeff status
 /jeff health
 ```
 
-`/jeff subscribe` enables alerts in the current channel for games whose top critic score is at or above `score` and which have at least `min_reviews` reviews (`min_reviews` defaults to 10). The bot scans OpenCritic for PC games released in the current and previous calendar year. Games that already meet the threshold at subscribe time are recorded as known so they do not post — only future threshold crossings produce alerts.
+`/jeff subscribe` enables alerts in the current channel for games whose top critic score is at or above `score`, which have at least `min_reviews` reviews, and whose critics-recommended percentage is at or above `min_recommended` (0–100). All three parameters are mandatory — the admin must set each axis explicitly. The bot scans OpenCritic for PC games released in the current and previous calendar year. Games that already meet the gate at subscribe time are recorded as known so they do not post — only future threshold crossings produce alerts.
 
-`/jeff threshold` updates the threshold of the active subscription. Lowering it records any games that newly qualify under the lower threshold as known (no announcement) so the channel does not get flooded with a backlog. Raising it does not unrecord anything — games already announced stay announced.
+`/jeff threshold` updates one or more values of the active subscription. Each parameter is optional; omitted values keep their current setting. Lowering any threshold records any games that newly qualify as known (no announcement) so the channel does not get flooded with a backlog. Raising values does not unrecord anything — games already announced stay announced.
 
 `/jeff unsubscribe` disables alerts.
 

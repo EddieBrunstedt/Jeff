@@ -13,8 +13,6 @@ use crate::{
     util::humanize_duration,
 };
 
-const DEFAULT_MIN_REVIEWS: i64 = 10;
-
 #[poise::command(
     slash_command,
     subcommands("subscribe", "threshold", "unsubscribe", "status", "health")
@@ -30,28 +28,41 @@ pub async fn subscribe(
     #[min = 1.0]
     #[max = 100.0]
     score: f64,
-    #[description = "Minimum number of reviews required (default 10)"]
+    #[description = "Minimum number of reviews required (e.g. 10)"]
     #[min = 1]
-    min_reviews: Option<i64>,
+    min_reviews: i64,
+    #[description = "Minimum percent of critics recommending the game (0-100)"]
+    #[min = 0.0]
+    #[max = 100.0]
+    min_recommended: f64,
 ) -> Result<()> {
     let data = ctx.data();
 
     if let Some(existing) = get_opencritic_subscription(&data.db).await? {
         ctx.say(format!(
-            "Jeff is already subscribed in <#{}> (threshold {:.1}, minimum reviews {}). \
-            Use `/jeff threshold` to change the threshold or `/jeff unsubscribe` to disable first.",
-            existing.channel_id, existing.threshold, existing.min_reviews
+            "Jeff is already subscribed in <#{}> (score {:.1}, minimum reviews {}, recommended {:.0}%). \
+            Use `/jeff threshold` to change values or `/jeff unsubscribe` to disable first.",
+            existing.channel_id,
+            existing.threshold,
+            existing.min_reviews,
+            existing.min_percent_recommended,
         ))
         .await?;
         return Ok(());
     }
 
     let channel_id = ctx.channel_id();
-    let min_reviews = min_reviews.unwrap_or(DEFAULT_MIN_REVIEWS);
 
     ctx.defer().await?;
 
-    insert_opencritic_subscription(&data.db, &channel_id.to_string(), score, min_reviews).await?;
+    insert_opencritic_subscription(
+        &data.db,
+        &channel_id.to_string(),
+        score,
+        min_reviews,
+        min_recommended,
+    )
+    .await?;
 
     let subscription = get_opencritic_subscription(&data.db)
         .await?
@@ -61,9 +72,9 @@ pub async fn subscribe(
 
     ctx.say(format!(
         "OpenCritic alerts enabled in this channel.\n\
-        Threshold: {:.1} | Minimum reviews: {}\n\
+        Score: {:.1} | Minimum reviews: {} | Minimum recommended: {:.0}%\n\
         Snapshotted {} currently-qualifying games as baseline. Only new threshold crossings will be posted here.",
-        score, min_reviews, outcome.newly_suppressed,
+        score, min_reviews, min_recommended, outcome.newly_suppressed,
     ))
     .await?;
 
@@ -73,13 +84,17 @@ pub async fn subscribe(
 #[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
 pub async fn threshold(
     ctx: Context<'_>,
-    #[description = "New minimum top critic score required to post (e.g. 85)"]
+    #[description = "New minimum top critic score (leave blank to keep current value)"]
     #[min = 1.0]
     #[max = 100.0]
-    score: f64,
-    #[description = "New minimum number of reviews required (leave blank to keep current value)"]
+    score: Option<f64>,
+    #[description = "New minimum number of reviews (leave blank to keep current value)"]
     #[min = 1]
     min_reviews: Option<i64>,
+    #[description = "New minimum percent recommended, 0-100 (leave blank to keep current value)"]
+    #[min = 0.0]
+    #[max = 100.0]
+    min_recommended: Option<f64>,
 ) -> Result<()> {
     let data = ctx.data();
 
@@ -89,14 +104,23 @@ pub async fn threshold(
         return Ok(());
     };
 
-    let new_min_reviews = min_reviews.unwrap_or(existing.min_reviews);
+    if score.is_none() && min_reviews.is_none() && min_recommended.is_none() {
+        ctx.say("Provide at least one of score, min_reviews, or min_recommended to change.")
+            .await?;
+        return Ok(());
+    }
 
-    if (score - existing.threshold).abs() < f64::EPSILON
+    let new_score = score.unwrap_or(existing.threshold);
+    let new_min_reviews = min_reviews.unwrap_or(existing.min_reviews);
+    let new_min_recommended = min_recommended.unwrap_or(existing.min_percent_recommended);
+
+    if (new_score - existing.threshold).abs() < f64::EPSILON
         && new_min_reviews == existing.min_reviews
+        && (new_min_recommended - existing.min_percent_recommended).abs() < f64::EPSILON
     {
         ctx.say(format!(
-            "Threshold is already {:.1} with {} minimum reviews. No change.",
-            existing.threshold, existing.min_reviews
+            "Settings are already score {:.1} / {} reviews / {:.0}% recommended. No change.",
+            existing.threshold, existing.min_reviews, existing.min_percent_recommended,
         ))
         .await?;
         return Ok(());
@@ -104,8 +128,13 @@ pub async fn threshold(
 
     ctx.defer().await?;
 
-    let updated =
-        update_opencritic_subscription_settings(&data.db, score, new_min_reviews).await?;
+    let updated = update_opencritic_subscription_settings(
+        &data.db,
+        new_score,
+        new_min_reviews,
+        new_min_recommended,
+    )
+    .await?;
     if !updated {
         ctx.say("Subscription disappeared before the update could complete.")
             .await?;
@@ -119,10 +148,17 @@ pub async fn threshold(
     let outcome = rebaseline(&data.db, &data.opencritic_client, &subscription).await?;
 
     ctx.say(format!(
-        "Threshold updated.\n\
-        Previous: {:.1} / {} reviews — New: {:.1} / {} reviews\n\
+        "Thresholds updated.\n\
+        Previous: {:.1} / {} reviews / {:.0}% recommended\n\
+        New: {:.1} / {} reviews / {:.0}% recommended\n\
         Snapshotted {} newly-qualifying games as baseline.",
-        existing.threshold, existing.min_reviews, score, new_min_reviews, outcome.newly_suppressed,
+        existing.threshold,
+        existing.min_reviews,
+        existing.min_percent_recommended,
+        new_score,
+        new_min_reviews,
+        new_min_recommended,
+        outcome.newly_suppressed,
     ))
     .await?;
 
@@ -148,8 +184,8 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
 
     let message = match subscription {
         Some(sub) => format!(
-            "Jeff is subscribed in <#{}>.\nThreshold: {:.1} | Minimum reviews: {}",
-            sub.channel_id, sub.threshold, sub.min_reviews
+            "Jeff is subscribed in <#{}>.\nScore: {:.1} | Minimum reviews: {} | Minimum recommended: {:.0}%",
+            sub.channel_id, sub.threshold, sub.min_reviews, sub.min_percent_recommended,
         ),
         None => "Jeff is not subscribed. Use `/jeff subscribe` to enable alerts.".to_string(),
     };

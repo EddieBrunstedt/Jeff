@@ -41,6 +41,9 @@ async fn run_bot(config: Config) -> Result<()> {
         poise::Framework::builder()
             .options(poise::FrameworkOptions {
                 commands: vec![commands::jeff::jeff()],
+                event_handler: |ctx, event, _framework, data| {
+                    Box::pin(handle_event(ctx, event, data))
+                },
                 ..Default::default()
             })
             .setup(move |ctx, _ready, framework| {
@@ -62,6 +65,23 @@ async fn run_bot(config: Config) -> Result<()> {
         .await
         .context("Failed to start Discord bot")?;
 
+    Ok(())
+}
+
+async fn handle_event(
+    ctx: &serenity::Context,
+    event: &serenity::FullEvent,
+    data: &Data,
+) -> Result<()> {
+    if let serenity::FullEvent::InteractionCreate { interaction } = event
+        && let serenity::Interaction::Component(component) = interaction
+        && component
+            .data
+            .custom_id
+            .starts_with(poller::REFRESH_BUTTON_PREFIX)
+    {
+        poller::handle_refresh_button(ctx, component, &data.opencritic_client).await?;
+    }
     Ok(())
 }
 

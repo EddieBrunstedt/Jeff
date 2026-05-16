@@ -1,0 +1,65 @@
+{
+    "images": {
+        "masthead": {
+            "og": "game/20559/o/lpezUnFe.jpg",
+            "xs": "game/20559/uvD2irTU.jpg",
+            "sm": "game/20559/hDd4txAv.jpg",
+            "md": "game/20559/LloIp5TP.jpg",
+            "lg": "game/20559/hAD2cea2.jpg",
+            "xl": "game/20559/6b3Grx54.jpg"
+        },
+        "screenshots": [
+            {
+                "og": "game/20559/o/vRIKNX4A.jpg",
+                "sm": "game/20559/vDal1i4p.jpg",
+                "_id": "69fcb7c65d660c3b626f350e"
+            },
+            {
+                "og": "game/20559/o/ZpjWaWoM.jpg",
+                "sm": "game/20559/P4TJfVpp.jpg",
+                "_id": "69fcb7c65d660c3b626f350f"
+            },
+            {
+                "og": "game/20559/o/LQV3OJ5e.jpg",
+                "sm": "game/20559/FBX0EJhA.jpg",
+                "_id": "69fcb7c65d660c3b626f3510"
+            }
+        ]
+    },
+    "id": 20559,
+    "name": "Battlestar Galactica: Scattered Hopes",
+    "imageMigrationComplete": false,
+    "trailers": [],
+    "hasLootBoxes": false,
+    "Companies": [],
+    "firstReleaseDate": "2026-05-11T00:00:00.000Z",
+    "Platforms": [
+        {
+            "id": 27,
+            "name": "PC",
+            "shortName": "PC",
+            "releaseDate": "2026-05-11T00:00:00.000Z"
+        }
+    ],
+    "tags": [],
+    "isMajorTitle": false,
+    "percentRecommended": 75,
+    "numReviews": 12,
+    "numTopCriticReviews": 9,
+    "medianScore": 80,
+    "topCriticScore": 80,
+    "percentile": 83,
+    "tier": "Strong",
+    "isPre2015": false,
+    "biggestDiscountDollars": 0,
+    "biggestDiscountPercentage": 0,
+    "Genres": [],
+    "createdAt": "2026-05-07T16:02:44.676Z",
+    "updatedAt": "2026-05-15T11:05:12.890Z",
+    "monetizationFeatures": {
+        "hasLootBoxes": false
+    },
+    "firstReviewDate": "2026-05-11T00:00:00.000Z",
+    "latestReviewDate": "2026-05-15T00:00:00.000Z",
+    "url": "https://opencritic.com/game/20559/battlestar-galactica-scattered-hopes"
+}
