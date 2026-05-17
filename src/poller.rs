@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result};
 use chrono::{DateTime, Datelike, Utc};
 use poise::serenity_prelude::{self as serenity, HttpError};
 use sqlx::SqlitePool;
-use tracing::{error, info, warn};
+use tracing::{Instrument, debug, error, field, info, info_span, warn};
 
 use crate::{
     config::Config,
@@ -13,9 +13,11 @@ use crate::{
         get_opencritic_subscription, insert_opencritic_decision, opencritic_decision_exists,
     },
     opencritic::{OpenCriticClient, OpenCriticGame},
+    util::truncate_for_log,
 };
 
 const DISCORD_UNKNOWN_CHANNEL_ERROR_CODE: isize = 10003;
+const DISCORD_ERROR_BODY_TRUNCATE: usize = 512;
 
 fn is_channel_gone_error(err: &serenity::Error) -> bool {
     matches!(
@@ -23,6 +25,26 @@ fn is_channel_gone_error(err: &serenity::Error) -> bool {
         serenity::Error::Http(HttpError::UnsuccessfulRequest(resp))
             if resp.error.code == DISCORD_UNKNOWN_CHANNEL_ERROR_CODE
     )
+}
+
+struct DiscordErrorParts {
+    status: u16,
+    code: isize,
+    message: String,
+    body: String,
+}
+
+fn discord_error_parts(err: &serenity::Error) -> Option<DiscordErrorParts> {
+    if let serenity::Error::Http(HttpError::UnsuccessfulRequest(resp)) = err {
+        Some(DiscordErrorParts {
+            status: resp.status_code.as_u16(),
+            code: resp.error.code,
+            message: resp.error.message.clone(),
+            body: format!("{:?}", resp.error),
+        })
+    } else {
+        None
+    }
 }
 
 fn scan_years() -> Vec<i32> {
@@ -33,7 +55,6 @@ fn scan_years() -> Vec<i32> {
 #[derive(Debug, Clone)]
 pub struct PollOutcome {
     pub scanned_games: usize,
-    pub subscribed: bool,
     pub messages_sent: usize,
     pub already_decided: usize,
     pub pages_requested: usize,
@@ -46,15 +67,38 @@ pub struct LastPollSnapshot {
     pub outcome: PollOutcome,
 }
 
+enum GameAction {
+    Skip,
+    AlreadyDecided,
+    Sent,
+    SendFailed,
+    ChannelGone,
+}
+
+#[tracing::instrument(
+    skip_all,
+    fields(
+        poll_id = %crate::tracing::short_id(),
+        trigger = "scheduled",
+    ),
+    err(Debug),
+)]
 pub async fn run_opencritic_poll(
     pool: &SqlitePool,
     client: &OpenCriticClient,
     http: &serenity::Http,
 ) -> Result<PollOutcome> {
+    let started = std::time::Instant::now();
+    info!("poll cycle start");
+
     let Some(subscription) = get_opencritic_subscription(pool).await? else {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            subscribed = false,
+            "poll cycle complete (no subscription)",
+        );
         return Ok(PollOutcome {
             scanned_games: 0,
-            subscribed: false,
             messages_sent: 0,
             already_decided: 0,
             pages_requested: 0,
@@ -75,19 +119,20 @@ pub async fn run_opencritic_poll(
     let now = Utc::now().to_rfc3339();
     let mut messages_sent = 0;
     let mut already_decided = 0;
+    let mut announcements_failed = 0;
+    let mut qualifying = 0;
 
     let channel_id = match subscription.channel_id.parse::<u64>() {
         Ok(id) => serenity::ChannelId::new(id),
         Err(err) => {
             warn!(
                 channel = %subscription.channel_id,
-                error = %err,
+                error = ?err,
                 "Subscribed channel ID does not parse as u64; auto-unsubscribing"
             );
             delete_opencritic_subscription(pool).await?;
             return Ok(PollOutcome {
                 scanned_games: scan.games.len(),
-                subscribed: false,
                 messages_sent: 0,
                 already_decided: 0,
                 pages_requested: scan.pages_requested,
@@ -97,58 +142,128 @@ pub async fn run_opencritic_poll(
     };
 
     for game in &scan.games {
-        if !game.qualifies(
-            subscription.threshold,
-            subscription.min_reviews,
-            subscription.min_percent_recommended,
-        ) {
-            continue;
-        }
-        if opencritic_decision_exists(pool, game.id).await? {
-            already_decided += 1;
-            continue;
-        }
+        let span = info_span!(
+            "announce_game",
+            game_id = game.id,
+            name = %game.name,
+            score = game.top_critic_score,
+            tier = %game.tier,
+        );
+        let action = async {
+            if !game.qualifies(
+                subscription.threshold,
+                subscription.min_reviews,
+                subscription.min_percent_recommended,
+            ) {
+                debug!(
+                    qualifies = false,
+                    percent_recommended = game.percent_recommended,
+                    num_reviews = game.num_reviews,
+                    "game evaluated",
+                );
+                return Ok::<GameAction, anyhow::Error>(GameAction::Skip);
+            }
+            if opencritic_decision_exists(pool, game.id).await? {
+                debug!(qualifies = true, already_decided = true, "game evaluated");
+                return Ok(GameAction::AlreadyDecided);
+            }
+            debug!(qualifies = true, already_decided = false, "game evaluated");
 
-        let mut full = client
-            .fetch_game(game.id)
-            .await
-            .with_context(|| format!("Failed to fetch OpenCritic game {}", game.id))?;
-        full.fill_missing_from(game);
+            let mut full = client
+                .fetch_game(game.id)
+                .await
+                .with_context(|| format!("Failed to fetch OpenCritic game {}", game.id))?;
+            full.fill_missing_from(game);
 
-        match send_opencritic_announcement(http, channel_id, &full).await {
-            Ok(_) => {
-                insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now).await?;
+            match send_opencritic_announcement(http, channel_id, &full).await {
+                Ok(message) => {
+                    insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now)
+                        .await?;
+                    info!(
+                        channel_id = %channel_id,
+                        message_id = %message.id,
+                        "announcement posted",
+                    );
+                    Ok(GameAction::Sent)
+                }
+                Err(err) if is_channel_gone_error(&err) => {
+                    warn!(
+                        channel = %subscription.channel_id,
+                        error = ?err,
+                        "Discord reports channel is gone (10003); auto-unsubscribing",
+                    );
+                    delete_opencritic_subscription(pool).await?;
+                    Ok(GameAction::ChannelGone)
+                }
+                Err(err) => {
+                    match discord_error_parts(&err) {
+                        Some(parts) => error!(
+                            channel = %subscription.channel_id,
+                            discord_status = parts.status,
+                            discord_code = parts.code,
+                            discord_message = %parts.message,
+                            discord_body = %truncate_for_log(&parts.body, DISCORD_ERROR_BODY_TRUNCATE),
+                            error = ?err,
+                            "Failed to post announcement; recording decision anyway to prevent retry storm",
+                        ),
+                        None => error!(
+                            channel = %subscription.channel_id,
+                            error = ?err,
+                            "Failed to post announcement; recording decision anyway to prevent retry storm",
+                        ),
+                    }
+                    insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now)
+                        .await?;
+                    Ok(GameAction::SendFailed)
+                }
+            }
+        }
+        .instrument(span)
+        .await?;
+
+        match action {
+            GameAction::Skip => {}
+            GameAction::AlreadyDecided => {
+                qualifying += 1;
+                already_decided += 1;
+            }
+            GameAction::Sent => {
+                qualifying += 1;
                 messages_sent += 1;
             }
-            Err(err) if is_channel_gone_error(&err) => {
-                warn!(
-                    channel = %subscription.channel_id,
-                    game_id = game.id,
-                    "Discord reports channel is gone (10003); auto-unsubscribing"
-                );
-                delete_opencritic_subscription(pool).await?;
-                break;
+            GameAction::SendFailed => {
+                qualifying += 1;
+                announcements_failed += 1;
             }
-            Err(err) => {
-                error!(
-                    channel = %subscription.channel_id,
-                    game_id = game.id,
-                    error = %err,
-                    "Failed to post OpenCritic announcement; recording decision anyway to avoid retry storms"
-                );
-                insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now).await?;
+            GameAction::ChannelGone => {
+                qualifying += 1;
+                break;
             }
         }
     }
 
-    Ok(PollOutcome {
+    let outcome = PollOutcome {
         scanned_games: scan.games.len(),
-        subscribed: true,
         messages_sent,
         already_decided,
         pages_requested: scan.pages_requested,
         rate_limit_remaining: scan.rate_limit_remaining,
-    })
+    };
+
+    info!(
+        scanned_games = outcome.scanned_games,
+        qualifying_games = qualifying,
+        announcements_attempted = messages_sent + announcements_failed,
+        announcements_succeeded = messages_sent,
+        announcements_failed,
+        already_decided = outcome.already_decided,
+        pages_requested = outcome.pages_requested,
+        rate_limit_remaining = outcome.rate_limit_remaining.as_deref(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "poll cycle complete",
+    );
+
+    Ok(outcome)
 }
 
 #[derive(Debug)]
@@ -156,6 +271,14 @@ pub struct RebaselineOutcome {
     pub newly_suppressed: usize,
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        threshold = subscription.threshold,
+        min_reviews = subscription.min_reviews,
+        min_percent_recommended = subscription.min_percent_recommended,
+    ),
+)]
 pub async fn rebaseline(
     pool: &SqlitePool,
     client: &OpenCriticClient,
@@ -359,6 +482,16 @@ pub async fn send_opencritic_announcement(
     channel_id.send_message(http, message).await
 }
 
+#[tracing::instrument(
+    skip_all,
+    fields(
+        custom_id = %interaction.data.custom_id,
+        user_id = %interaction.user.id,
+        message_id = %interaction.message.id,
+        interaction_id = %interaction.id,
+        game_id = field::Empty,
+    ),
+)]
 pub async fn handle_refresh_button(
     ctx: &serenity::Context,
     interaction: &serenity::ComponentInteraction,
@@ -375,21 +508,13 @@ pub async fn handle_refresh_button(
     let game_id: i64 = match game_id_str.parse() {
         Ok(id) => id,
         Err(err) => {
-            warn!(
-                custom_id = %interaction.data.custom_id,
-                error = %err,
-                "Refresh: failed to parse game id from custom_id"
-            );
+            warn!(error = ?err, "Refresh: failed to parse game id from custom_id");
             return Ok(());
         }
     };
 
-    info!(
-        game_id,
-        message_id = %interaction.message.id,
-        user_id = %interaction.user.id,
-        "Refresh requested"
-    );
+    tracing::Span::current().record("game_id", game_id);
+    info!("Refresh requested");
 
     interaction
         .create_response(&ctx.http, serenity::CreateInteractionResponse::Acknowledge)
@@ -399,7 +524,7 @@ pub async fn handle_refresh_button(
     let game = match client.fetch_game(game_id).await {
         Ok(game) => game,
         Err(err) => {
-            error!(game_id, error = %err, "Refresh: failed to fetch game");
+            error!(error = ?err, "Refresh: failed to fetch game");
             interaction
                 .create_followup(
                     &ctx.http,
@@ -425,7 +550,7 @@ pub async fn handle_refresh_button(
         .await
         .context("Failed to edit refreshed announcement")?;
 
-    info!(game_id, "Refresh completed");
+    info!("Refresh completed");
 
     Ok(())
 }
@@ -443,27 +568,30 @@ pub fn spawn_opencritic_background_poll(
 
         loop {
             interval.tick().await;
+            debug!("poll cycle tick");
 
-            info!("Running background OpenCritic poll");
+            let pool = pool.clone();
+            let client = client.clone();
+            let http = Arc::clone(&http);
 
-            match run_opencritic_poll(&pool, &client, &http).await {
-                Ok(outcome) => {
-                    info!(
-                        pages_requested = outcome.pages_requested,
-                        scanned_games = outcome.scanned_games,
-                        messages_sent = outcome.messages_sent,
-                        already_decided = outcome.already_decided,
-                        subscribed = outcome.subscribed,
-                        rate_limit_remaining = outcome.rate_limit_remaining.as_deref(),
-                        "Background OpenCritic poll complete"
-                    );
+            let join =
+                tokio::spawn(async move { run_opencritic_poll(&pool, &client, &http).await });
+
+            match join.await {
+                Ok(Ok(outcome)) => {
                     *last_poll.lock().unwrap() = Some(LastPollSnapshot {
                         at: Utc::now(),
                         outcome,
                     });
                 }
-                Err(err) => {
-                    error!(error = %err, "Background OpenCritic poll failed");
+                Ok(Err(_)) => {
+                    // Error already logged inside run_opencritic_poll via err(Debug).
+                }
+                Err(join_err) => {
+                    error!(
+                        join_error = ?join_err,
+                        "Poll cycle task panicked or was cancelled; loop continues",
+                    );
                 }
             }
         }

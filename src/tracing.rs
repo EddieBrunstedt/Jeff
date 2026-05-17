@@ -1,4 +1,7 @@
 use std::panic;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use tracing_subscriber::EnvFilter;
 
@@ -50,4 +53,17 @@ fn install_panic_hook() {
         );
         default_hook(info);
     }));
+}
+
+pub fn short_id() -> String {
+    static COUNTER: OnceLock<AtomicU64> = OnceLock::new();
+    let counter = COUNTER.get_or_init(|| {
+        let seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0);
+        AtomicU64::new(seed)
+    });
+    let n = counter.fetch_add(1, Ordering::Relaxed);
+    format!("{:06x}", n & 0xFF_FFFF)
 }
