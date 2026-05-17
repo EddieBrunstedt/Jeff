@@ -1,6 +1,5 @@
 use crate::{
-    opencritic::Client,
-    poller::{LastPollSnapshot, RefreshThrottle},
+    discord::refresh::RefreshThrottle, opencritic::Client, poller::LastPollSnapshot,
 };
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;

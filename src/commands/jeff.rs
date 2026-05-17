@@ -10,8 +10,9 @@ use crate::{
         delete_subscription, get_subscription, insert_subscription, ping,
         update_subscription_settings,
     },
+    discord::announce::send_announcement,
     opencritic::Game,
-    poller::{rebaseline, send_announcement},
+    poller::rebaseline,
     util::humanize_duration,
 };
 
