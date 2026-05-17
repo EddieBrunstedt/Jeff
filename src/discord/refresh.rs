@@ -31,18 +31,14 @@ impl RefreshThrottle {
         self.cooldown
     }
 
-    pub fn check(&self, game_id: i64) -> Result<(), Duration> {
+    pub fn cooldown_remaining(&self, game_id: i64) -> Option<Duration> {
         if self.cooldown.is_zero() {
-            return Ok(());
+            return None;
         }
+
         let map = self.last_press.lock().unwrap();
-        if let Some(last) = map.get(&game_id) {
-            let elapsed = last.elapsed();
-            if elapsed < self.cooldown {
-                return Err(self.cooldown - elapsed);
-            }
-        }
-        Ok(())
+        let elapsed = map.get(&game_id)?.elapsed();
+        self.cooldown.checked_sub(elapsed)
     }
 
     pub fn record(&self, game_id: i64) {
@@ -99,7 +95,7 @@ pub async fn handle_refresh_button(
     tracing::Span::current().record("game_id", game_id);
     info!("Refresh requested");
 
-    if let Err(remaining) = throttle.check(game_id) {
+    if let Some(remaining) = throttle.cooldown_remaining(game_id) {
         let remaining_secs = remaining.as_secs().max(1);
         info!(
             remaining_secs,

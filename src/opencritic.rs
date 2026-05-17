@@ -9,9 +9,10 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tracing::{debug, error, trace, warn};
 
-use crate::util::truncate_bytes;
+use crate::util::{non_empty_str, truncate_bytes};
 
 const LOG_BODY_TRUNCATE: usize = 2048;
+const PAGE_SIZE: usize = 20;
 const RATE_LIMIT_WARN_THRESHOLD: i64 = 20;
 
 #[derive(Debug, Clone)]
@@ -341,15 +342,6 @@ fn normalize_opencritic_image_url(value: &str) -> Option<String> {
     }
 }
 
-fn non_empty_str(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
-}
-
 impl Client {
     pub fn new(rapidapi_key: String) -> Self {
         Self {
@@ -494,11 +486,11 @@ impl Client {
                     .filter(|game| game.qualifies(threshold, min_reviews, min_percent_recommended)),
             );
 
-            if page_len < 20 || last_score < threshold {
+            if page_len < PAGE_SIZE || last_score < threshold {
                 break;
             }
 
-            skip += 20;
+            skip += PAGE_SIZE;
         }
 
         Ok(Scan {

@@ -3,6 +3,15 @@ name = "jeff"
 version = "0.2.0"
 edition = "2024"
 
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+todo = "warn"
+
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

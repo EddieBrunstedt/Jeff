@@ -1,5 +1,14 @@
 use std::time::Duration;
 
+pub fn non_empty_str(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 pub fn truncate_bytes(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_string();

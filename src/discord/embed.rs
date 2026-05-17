@@ -1,7 +1,7 @@
 use chrono::Utc;
 use poise::serenity_prelude as serenity;
 
-use crate::opencritic::Game;
+use crate::{opencritic::Game, util::non_empty_str};
 
 const DESCRIPTION_MAX_LEN: usize = 400;
 
@@ -136,13 +136,4 @@ fn format_opencritic_date(value: &str) -> String {
         .filter(|date| !date.is_empty())
         .unwrap_or(value)
         .to_string()
-}
-
-fn non_empty_str(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
