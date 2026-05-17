@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-pub fn truncate_for_log(value: &str, max_bytes: usize) -> String {
+pub fn truncate_bytes(value: &str, max_bytes: usize) -> String {
     if value.len() <= max_bytes {
         return value.to_string();
     }

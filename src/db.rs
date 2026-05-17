@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
-use crate::opencritic::OpenCriticGame;
+use crate::opencritic::Game;
 
 #[derive(Debug, Clone, Copy)]
 pub enum DecisionStatus {
@@ -19,7 +19,7 @@ impl DecisionStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct OpenCriticSubscription {
+pub struct Subscription {
     pub channel_id: String,
     pub threshold: f64,
     pub min_reviews: i64,
@@ -77,7 +77,7 @@ pub async fn ping(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
-pub async fn opencritic_decision_exists(pool: &SqlitePool, game_id: i64) -> Result<bool> {
+pub async fn decision_exists(pool: &SqlitePool, game_id: i64) -> Result<bool> {
     let value: Option<(i64,)> =
         sqlx::query_as("SELECT game_id FROM opencritic_decisions WHERE game_id = ? LIMIT 1")
             .bind(game_id)
@@ -88,9 +88,9 @@ pub async fn opencritic_decision_exists(pool: &SqlitePool, game_id: i64) -> Resu
     Ok(value.is_some())
 }
 
-pub async fn insert_opencritic_decision(
+pub async fn insert_decision(
     pool: &SqlitePool,
-    game: &OpenCriticGame,
+    game: &Game,
     status: DecisionStatus,
     decided_at: &str,
 ) -> Result<()> {
@@ -125,9 +125,7 @@ pub async fn insert_opencritic_decision(
     Ok(())
 }
 
-pub async fn get_opencritic_subscription(
-    pool: &SqlitePool,
-) -> Result<Option<OpenCriticSubscription>> {
+pub async fn get_subscription(pool: &SqlitePool) -> Result<Option<Subscription>> {
     let row: Option<(String, f64, i64, f64)> = sqlx::query_as(
         "SELECT channel_id, threshold, min_reviews, min_percent_recommended FROM opencritic_subscription WHERE id = 1",
     )
@@ -136,7 +134,7 @@ pub async fn get_opencritic_subscription(
     .context("Failed to load OpenCritic subscription")?;
 
     Ok(row.map(
-        |(channel_id, threshold, min_reviews, min_percent_recommended)| OpenCriticSubscription {
+        |(channel_id, threshold, min_reviews, min_percent_recommended)| Subscription {
             channel_id,
             threshold,
             min_reviews,
@@ -145,7 +143,7 @@ pub async fn get_opencritic_subscription(
     ))
 }
 
-pub async fn insert_opencritic_subscription(
+pub async fn insert_subscription(
     pool: &SqlitePool,
     channel_id: &str,
     threshold: f64,
@@ -166,7 +164,7 @@ pub async fn insert_opencritic_subscription(
     Ok(())
 }
 
-pub async fn update_opencritic_subscription_settings(
+pub async fn update_subscription_settings(
     pool: &SqlitePool,
     threshold: f64,
     min_reviews: i64,
@@ -185,7 +183,7 @@ pub async fn update_opencritic_subscription_settings(
     Ok(result.rows_affected() > 0)
 }
 
-pub async fn delete_opencritic_subscription(pool: &SqlitePool) -> Result<bool> {
+pub async fn delete_subscription(pool: &SqlitePool) -> Result<bool> {
     let result = sqlx::query("DELETE FROM opencritic_subscription WHERE id = 1")
         .execute(pool)
         .await

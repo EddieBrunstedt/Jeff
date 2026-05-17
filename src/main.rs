@@ -16,7 +16,7 @@ mod util;
 
 use config::Config;
 use context::Data;
-use opencritic::OpenCriticClient;
+use opencritic::Client;
 
 #[tokio::main]
 async fn main() {
@@ -53,7 +53,7 @@ async fn run_bot(config: Config) -> Result<()> {
                 ..Default::default()
             })
             .setup(move |ctx, _ready, framework| {
-                Box::pin(initialize_bot_data(ctx, framework, Arc::clone(&config)))
+                Box::pin(build_data(ctx, framework, Arc::clone(&config)))
             })
             .build()
     };
@@ -97,7 +97,7 @@ async fn handle_event(
     Ok(())
 }
 
-async fn initialize_bot_data(
+async fn build_data(
     ctx: &serenity::Context,
     framework: &poise::Framework<Data, context::Error>,
     config: Arc<Config>,
@@ -108,14 +108,14 @@ async fn initialize_bot_data(
     info!("Registered commands in guild {}", config.guild_id);
 
     let db = db::connect_and_migrate(&config.database_url).await?;
-    let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
+    let opencritic_client = Client::new(config.rapidapi_key.clone());
     let last_poll = Arc::new(Mutex::new(None));
     let refresh_throttle = Arc::new(poller::RefreshThrottle::new(config.refresh_cooldown));
 
     if config.disable_polling {
         info!("JEFF_DISABLE_POLLING is true; background poller will not be started");
     } else {
-        poller::spawn_opencritic_background_poll(
+        poller::spawn_background_poller(
             Arc::clone(&ctx.http),
             db.clone(),
             opencritic_client.clone(),

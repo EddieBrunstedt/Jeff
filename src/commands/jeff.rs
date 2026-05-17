@@ -7,11 +7,11 @@ use tracing::{error, info, warn};
 use crate::{
     context::Context,
     db::{
-        delete_opencritic_subscription, get_opencritic_subscription,
-        insert_opencritic_subscription, ping, update_opencritic_subscription_settings,
+        delete_subscription, get_subscription, insert_subscription, ping,
+        update_subscription_settings,
     },
-    opencritic::OpenCriticGame,
-    poller::{rebaseline, send_opencritic_announcement},
+    opencritic::Game,
+    poller::{rebaseline, send_announcement},
     util::humanize_duration,
 };
 
@@ -70,7 +70,7 @@ pub async fn subscribe(
     info!("command received");
     let data = ctx.data();
 
-    if let Some(existing) = get_opencritic_subscription(&data.db).await? {
+    if let Some(existing) = get_subscription(&data.db).await? {
         info!(
             existing_channel = %existing.channel_id,
             existing_threshold = existing.threshold,
@@ -96,7 +96,7 @@ pub async fn subscribe(
 
     ctx.defer().await?;
 
-    insert_opencritic_subscription(
+    insert_subscription(
         &data.db,
         &channel_id.to_string(),
         score,
@@ -113,7 +113,7 @@ pub async fn subscribe(
         "subscription created",
     );
 
-    let subscription = get_opencritic_subscription(&data.db)
+    let subscription = get_subscription(&data.db)
         .await?
         .context("Subscription disappeared immediately after insert")?;
 
@@ -169,7 +169,7 @@ pub async fn threshold(
     info!("command received");
     let data = ctx.data();
 
-    let Some(existing) = get_opencritic_subscription(&data.db).await? else {
+    let Some(existing) = get_subscription(&data.db).await? else {
         info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             outcome = "not_subscribed",
@@ -214,7 +214,7 @@ pub async fn threshold(
 
     ctx.defer().await?;
 
-    let updated = update_opencritic_subscription_settings(
+    let updated = update_subscription_settings(
         &data.db,
         new_score,
         new_min_reviews,
@@ -242,7 +242,7 @@ pub async fn threshold(
         "subscription updated",
     );
 
-    let subscription = get_opencritic_subscription(&data.db)
+    let subscription = get_subscription(&data.db)
         .await?
         .context("Subscription disappeared immediately after update")?;
 
@@ -287,7 +287,7 @@ pub async fn threshold(
 pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
     let started = Instant::now();
     info!("command received");
-    let removed = delete_opencritic_subscription(&ctx.data().db).await?;
+    let removed = delete_subscription(&ctx.data().db).await?;
 
     if removed {
         info!(
@@ -322,7 +322,7 @@ pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
 pub async fn status(ctx: Context<'_>) -> Result<()> {
     let started = Instant::now();
     info!("command received");
-    let subscription = get_opencritic_subscription(&ctx.data().db).await?;
+    let subscription = get_subscription(&ctx.data().db).await?;
 
     let message = match &subscription {
         Some(sub) => format!(
@@ -367,7 +367,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
     let mut failures: Vec<String> = Vec::new();
 
     for (label, raw) in DEBUG_FIXTURES {
-        let game: OpenCriticGame = match serde_json::from_str(raw) {
+        let game: Game = match serde_json::from_str(raw) {
             Ok(game) => game,
             Err(err) => {
                 error!(fixture = label, error = ?err, "debug_post: failed to parse fixture");
@@ -376,7 +376,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
             }
         };
 
-        if let Err(err) = send_opencritic_announcement(&http, channel_id, &game).await {
+        if let Err(err) = send_announcement(&http, channel_id, &game).await {
             error!(
                 fixture = label,
                 game_id = game.id,
@@ -457,13 +457,13 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
         .last_rate_limit_remaining()
         .unwrap_or_else(|| "unknown (no API call yet)".to_string());
 
-    let subscribed = get_opencritic_subscription(&data.db).await?.is_some();
+    let subscribed = get_subscription(&data.db).await?.is_some();
 
     let last_poll = data.last_poll.lock().unwrap().clone();
     let last_poll_str = match last_poll {
         Some(snap) => {
             let ago = now
-                .signed_duration_since(snap.at)
+                .signed_duration_since(snap.completed_at)
                 .to_std()
                 .unwrap_or_default();
             format!(

@@ -1,5 +1,5 @@
 use crate::{
-    opencritic::OpenCriticClient,
+    opencritic::Client,
     poller::{LastPollSnapshot, RefreshThrottle},
 };
 use chrono::{DateTime, Utc};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Data {
     pub db: SqlitePool,
-    pub opencritic_client: OpenCriticClient,
+    pub opencritic_client: Client,
     pub started_at: DateTime<Utc>,
     pub last_poll: Arc<Mutex<Option<LastPollSnapshot>>>,
     pub refresh_throttle: Arc<RefreshThrottle>,

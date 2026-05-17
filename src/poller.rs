@@ -11,11 +11,11 @@ use tracing::{Instrument, debug, error, field, info, info_span, warn};
 use crate::{
     config::Config,
     db::{
-        DecisionStatus, OpenCriticSubscription, delete_opencritic_subscription,
-        get_opencritic_subscription, insert_opencritic_decision, opencritic_decision_exists,
+        DecisionStatus, Subscription, decision_exists, delete_subscription, get_subscription,
+        insert_decision,
     },
-    opencritic::{OpenCriticClient, OpenCriticGame},
-    util::truncate_for_log,
+    opencritic::{Client, Game},
+    util::truncate_bytes,
 };
 
 const DISCORD_UNKNOWN_CHANNEL_ERROR_CODE: isize = 10003;
@@ -65,7 +65,7 @@ pub struct PollOutcome {
 
 #[derive(Debug, Clone)]
 pub struct LastPollSnapshot {
-    pub at: DateTime<Utc>,
+    pub completed_at: DateTime<Utc>,
     pub outcome: PollOutcome,
 }
 
@@ -85,15 +85,15 @@ enum GameAction {
     ),
     err(Debug),
 )]
-pub async fn run_opencritic_poll(
+pub async fn run_poll_cycle(
     pool: &SqlitePool,
-    client: &OpenCriticClient,
+    client: &Client,
     http: &serenity::Http,
 ) -> Result<PollOutcome> {
     let started = std::time::Instant::now();
     info!("poll cycle start");
 
-    let Some(subscription) = get_opencritic_subscription(pool).await? else {
+    let Some(subscription) = get_subscription(pool).await? else {
         info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
             subscribed = false,
@@ -132,7 +132,7 @@ pub async fn run_opencritic_poll(
                 error = ?err,
                 "Subscribed channel ID does not parse as u64; auto-unsubscribing"
             );
-            delete_opencritic_subscription(pool).await?;
+            delete_subscription(pool).await?;
             return Ok(PollOutcome {
                 scanned_games: scan.games.len(),
                 messages_sent: 0,
@@ -165,7 +165,7 @@ pub async fn run_opencritic_poll(
                 );
                 return Ok::<GameAction, anyhow::Error>(GameAction::Skip);
             }
-            if opencritic_decision_exists(pool, game.id).await? {
+            if decision_exists(pool, game.id).await? {
                 debug!(qualifies = true, already_decided = true, "game evaluated");
                 return Ok(GameAction::AlreadyDecided);
             }
@@ -177,9 +177,9 @@ pub async fn run_opencritic_poll(
                 .with_context(|| format!("Failed to fetch OpenCritic game {}", game.id))?;
             full.fill_missing_from(game);
 
-            match send_opencritic_announcement(http, channel_id, &full).await {
+            match send_announcement(http, channel_id, &full).await {
                 Ok(message) => {
-                    insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now)
+                    insert_decision(pool, &full, DecisionStatus::Announced, &now)
                         .await?;
                     info!(
                         channel_id = %channel_id,
@@ -194,7 +194,7 @@ pub async fn run_opencritic_poll(
                         error = ?err,
                         "Discord reports channel is gone (10003); auto-unsubscribing",
                     );
-                    delete_opencritic_subscription(pool).await?;
+                    delete_subscription(pool).await?;
                     Ok(GameAction::ChannelGone)
                 }
                 Err(err) => {
@@ -204,7 +204,7 @@ pub async fn run_opencritic_poll(
                             discord_status = parts.status,
                             discord_code = parts.code,
                             discord_message = %parts.message,
-                            discord_body = %truncate_for_log(&parts.body, DISCORD_ERROR_BODY_TRUNCATE),
+                            discord_body = %truncate_bytes(&parts.body, DISCORD_ERROR_BODY_TRUNCATE),
                             error = ?err,
                             "Failed to post announcement; recording decision anyway to prevent retry storm",
                         ),
@@ -214,7 +214,7 @@ pub async fn run_opencritic_poll(
                             "Failed to post announcement; recording decision anyway to prevent retry storm",
                         ),
                     }
-                    insert_opencritic_decision(pool, &full, DecisionStatus::Announced, &now)
+                    insert_decision(pool, &full, DecisionStatus::Announced, &now)
                         .await?;
                     Ok(GameAction::SendFailed)
                 }
@@ -283,8 +283,8 @@ pub struct RebaselineOutcome {
 )]
 pub async fn rebaseline(
     pool: &SqlitePool,
-    client: &OpenCriticClient,
-    subscription: &OpenCriticSubscription,
+    client: &Client,
+    subscription: &Subscription,
 ) -> Result<RebaselineOutcome> {
     let years = scan_years();
     let scan = client
@@ -299,10 +299,10 @@ pub async fn rebaseline(
     let mut newly_suppressed = 0;
 
     for game in &scan.games {
-        if opencritic_decision_exists(pool, game.id).await? {
+        if decision_exists(pool, game.id).await? {
             continue;
         }
-        insert_opencritic_decision(pool, game, DecisionStatus::BaselineSuppressed, &now).await?;
+        insert_decision(pool, game, DecisionStatus::BaselineSuppressed, &now).await?;
         newly_suppressed += 1;
     }
 
@@ -354,7 +354,7 @@ impl RefreshThrottle {
     }
 }
 
-pub fn build_opencritic_embed(game: &OpenCriticGame) -> serenity::CreateEmbed {
+pub fn build_announcement_embed(game: &Game) -> serenity::CreateEmbed {
     let url = game
         .url
         .as_deref()
@@ -506,13 +506,13 @@ fn non_empty_str(value: &str) -> Option<&str> {
     }
 }
 
-pub async fn send_opencritic_announcement(
+pub async fn send_announcement(
     http: &serenity::Http,
     channel_id: serenity::ChannelId,
-    game: &OpenCriticGame,
+    game: &Game,
 ) -> std::result::Result<serenity::Message, serenity::Error> {
     let message = serenity::CreateMessage::new()
-        .embed(build_opencritic_embed(game))
+        .embed(build_announcement_embed(game))
         .components(vec![build_refresh_action_row(game.id)]);
     channel_id.send_message(http, message).await
 }
@@ -530,7 +530,7 @@ pub async fn send_opencritic_announcement(
 pub async fn handle_refresh_button(
     ctx: &serenity::Context,
     interaction: &serenity::ComponentInteraction,
-    client: &OpenCriticClient,
+    client: &Client,
     throttle: &RefreshThrottle,
 ) -> Result<()> {
     let Some(game_id_str) = interaction
@@ -603,7 +603,7 @@ pub async fn handle_refresh_button(
             &ctx.http,
             interaction.message.id,
             serenity::EditMessage::new()
-                .embed(build_opencritic_embed(&game))
+                .embed(build_announcement_embed(&game))
                 .components(vec![build_refresh_action_row(game.id)]),
         )
         .await
@@ -615,10 +615,10 @@ pub async fn handle_refresh_button(
     Ok(())
 }
 
-pub fn spawn_opencritic_background_poll(
+pub fn spawn_background_poller(
     http: Arc<serenity::Http>,
     pool: SqlitePool,
-    client: OpenCriticClient,
+    client: Client,
     config: Arc<Config>,
     last_poll: Arc<Mutex<Option<LastPollSnapshot>>>,
 ) {
@@ -635,17 +635,17 @@ pub fn spawn_opencritic_background_poll(
             let http = Arc::clone(&http);
 
             let join =
-                tokio::spawn(async move { run_opencritic_poll(&pool, &client, &http).await });
+                tokio::spawn(async move { run_poll_cycle(&pool, &client, &http).await });
 
             match join.await {
                 Ok(Ok(outcome)) => {
                     *last_poll.lock().unwrap() = Some(LastPollSnapshot {
-                        at: Utc::now(),
+                        completed_at: Utc::now(),
                         outcome,
                     });
                 }
                 Ok(Err(_)) => {
-                    // Error already logged inside run_opencritic_poll via err(Debug).
+                    // Error already logged inside run_poll_cycle via err(Debug).
                 }
                 Err(join_err) => {
                     error!(

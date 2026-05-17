@@ -9,27 +9,27 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
 use tracing::{debug, error, trace, warn};
 
-use crate::util::truncate_for_log;
+use crate::util::truncate_bytes;
 
 const LOG_BODY_TRUNCATE: usize = 2048;
 const RATE_LIMIT_WARN_THRESHOLD: i64 = 20;
 
 #[derive(Debug, Clone)]
-pub struct OpenCriticClient {
+pub struct Client {
     http: reqwest::Client,
     rapidapi_key: String,
     last_rate_limit_remaining: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
-pub struct OpenCriticScan {
-    pub games: Vec<OpenCriticGame>,
+pub struct Scan {
+    pub games: Vec<Game>,
     pub pages_requested: usize,
     pub rate_limit_remaining: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct OpenCriticImageSet {
+pub struct ImageSet {
     #[serde(default)]
     pub og: Option<String>,
     #[serde(default)]
@@ -45,23 +45,23 @@ pub struct OpenCriticImageSet {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-pub struct OpenCriticImages {
+pub struct Images {
     #[serde(default)]
-    pub masthead: OpenCriticImageSet,
+    pub masthead: ImageSet,
     #[serde(default)]
-    pub banner: OpenCriticImageSet,
+    pub banner: ImageSet,
     #[serde(default)]
-    pub square: OpenCriticImageSet,
+    pub square: ImageSet,
     #[serde(default, rename = "box")]
-    pub box_art: OpenCriticImageSet,
+    pub box_art: ImageSet,
     #[serde(default)]
-    pub logo: OpenCriticImageSet,
+    pub logo: ImageSet,
     #[serde(default)]
-    pub screenshots: Vec<OpenCriticImageSet>,
+    pub screenshots: Vec<ImageSet>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpenCriticScreenshot {
+pub struct Screenshot {
     #[serde(default, rename = "fullRes")]
     pub full_res: Option<String>,
     #[serde(default)]
@@ -69,7 +69,7 @@ pub struct OpenCriticScreenshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpenCriticPlatform {
+pub struct Platform {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default, rename = "shortName")]
@@ -79,13 +79,13 @@ pub struct OpenCriticPlatform {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpenCriticGenre {
+pub struct Genre {
     #[serde(default)]
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpenCriticCompany {
+pub struct Company {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default, rename = "type")]
@@ -93,25 +93,25 @@ pub struct OpenCriticCompany {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct OpenCriticGame {
+pub struct Game {
     pub id: i64,
     pub name: String,
     #[serde(default)]
-    pub images: OpenCriticImages,
+    pub images: Images,
     #[serde(default)]
-    pub screenshots: Vec<OpenCriticScreenshot>,
+    pub screenshots: Vec<Screenshot>,
     #[serde(default, rename = "mastheadScreenshot")]
-    pub masthead_screenshot: Option<OpenCriticScreenshot>,
+    pub masthead_screenshot: Option<Screenshot>,
     #[serde(default, rename = "bannerScreenshot")]
-    pub banner_screenshot: Option<OpenCriticScreenshot>,
+    pub banner_screenshot: Option<Screenshot>,
     #[serde(default, rename = "squareScreenshot")]
-    pub square_screenshot: Option<OpenCriticScreenshot>,
+    pub square_screenshot: Option<Screenshot>,
     #[serde(default, rename = "logoScreenshot")]
-    pub logo_screenshot: Option<OpenCriticScreenshot>,
+    pub logo_screenshot: Option<Screenshot>,
     #[serde(default, rename = "firstReleaseDate", alias = "releaseDate")]
     pub first_release_date: Option<String>,
     #[serde(default, rename = "Platforms", alias = "platforms")]
-    pub platforms: Vec<OpenCriticPlatform>,
+    pub platforms: Vec<Platform>,
     #[serde(default, rename = "percentRecommended")]
     pub percent_recommended: f64,
     #[serde(default, rename = "numReviews")]
@@ -125,21 +125,21 @@ pub struct OpenCriticGame {
     #[serde(default)]
     pub description: Option<String>,
     #[serde(default, rename = "Genres", alias = "genres")]
-    pub genres: Vec<OpenCriticGenre>,
+    pub genres: Vec<Genre>,
     #[serde(default, rename = "Companies", alias = "companies")]
-    pub companies: Vec<OpenCriticCompany>,
+    pub companies: Vec<Company>,
 }
 
-impl OpenCriticGame {
+impl Game {
     pub fn qualifies(
         &self,
         threshold: f64,
-        minimum_reviews: i64,
-        minimum_percent_recommended: f64,
+        min_reviews: i64,
+        min_percent_recommended: f64,
     ) -> bool {
         self.top_critic_score >= threshold
-            && self.num_reviews >= minimum_reviews
-            && self.percent_recommended >= minimum_percent_recommended
+            && self.num_reviews >= min_reviews
+            && self.percent_recommended >= min_percent_recommended
     }
 
     pub fn pc_release_date(&self) -> Option<&str> {
@@ -301,7 +301,7 @@ fn optional_string_is_empty(value: &Option<String>) -> bool {
         .is_empty()
 }
 
-fn first_platform_release_date(platforms: &[OpenCriticPlatform]) -> Option<String> {
+fn first_platform_release_date(platforms: &[Platform]) -> Option<String> {
     platforms
         .iter()
         .filter_map(|platform| platform.release_date.as_deref())
@@ -310,7 +310,7 @@ fn first_platform_release_date(platforms: &[OpenCriticPlatform]) -> Option<Strin
         .next()
 }
 
-fn pc_platform_release_date(platforms: &[OpenCriticPlatform]) -> Option<&str> {
+fn pc_platform_release_date(platforms: &[Platform]) -> Option<&str> {
     platforms
         .iter()
         .find(|platform| {
@@ -350,7 +350,7 @@ fn non_empty_str(value: &str) -> Option<&str> {
     }
 }
 
-impl OpenCriticClient {
+impl Client {
     pub fn new(rapidapi_key: String) -> Self {
         Self {
             http: reqwest::Client::new(),
@@ -364,7 +364,7 @@ impl OpenCriticClient {
     }
 
     #[tracing::instrument(skip(self), fields(game_id))]
-    pub async fn fetch_game(&self, game_id: i64) -> Result<OpenCriticGame> {
+    pub async fn fetch_game(&self, game_id: i64) -> Result<Game> {
         let url = format!("https://opencritic-api.p.rapidapi.com/game/{game_id}");
         let started = Instant::now();
         let response = self
@@ -395,16 +395,16 @@ impl OpenCriticClient {
         if !status.is_success() {
             error!(
                 status = status.as_u16(),
-                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                body = %truncate_bytes(&body, LOG_BODY_TRUNCATE),
                 "opencritic game request failed",
             );
             bail!("OpenCritic game details request failed with {status}");
         }
 
-        serde_json::from_str::<OpenCriticGame>(&body).map_err(|err| {
+        serde_json::from_str::<Game>(&body).map_err(|err| {
             error!(
                 error = ?err,
-                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                body = %truncate_bytes(&body, LOG_BODY_TRUNCATE),
                 "opencritic game parse failed",
             );
             anyhow::anyhow!("Failed to parse OpenCritic game details response: {err}")
@@ -416,17 +416,17 @@ impl OpenCriticClient {
         fields(
             years = ?years,
             threshold,
-            minimum_reviews,
-            minimum_percent_recommended,
+            min_reviews,
+            min_percent_recommended,
         ),
     )]
     pub async fn scan_years(
         &self,
         years: &[i32],
         threshold: f64,
-        minimum_reviews: i64,
-        minimum_percent_recommended: f64,
-    ) -> Result<OpenCriticScan> {
+        min_reviews: i64,
+        min_percent_recommended: f64,
+    ) -> Result<Scan> {
         let mut games_by_id = HashMap::new();
         let mut pages_requested = 0;
         let mut rate_limit_remaining = None;
@@ -436,8 +436,8 @@ impl OpenCriticClient {
                 .scan_year(
                     *year,
                     threshold,
-                    minimum_reviews,
-                    minimum_percent_recommended,
+                    min_reviews,
+                    min_percent_recommended,
                 )
                 .await
                 .with_context(|| format!("Failed to scan OpenCritic year {year}"))?;
@@ -453,7 +453,7 @@ impl OpenCriticClient {
         let mut games: Vec<_> = games_by_id.into_values().collect();
         games.sort_by(|a, b| b.top_critic_score.total_cmp(&a.top_critic_score));
 
-        Ok(OpenCriticScan {
+        Ok(Scan {
             games,
             pages_requested,
             rate_limit_remaining,
@@ -462,15 +462,15 @@ impl OpenCriticClient {
 
     #[tracing::instrument(
         skip(self),
-        fields(year, threshold, minimum_reviews, minimum_percent_recommended)
+        fields(year, threshold, min_reviews, min_percent_recommended)
     )]
     async fn scan_year(
         &self,
         year: i32,
         threshold: f64,
-        minimum_reviews: i64,
-        minimum_percent_recommended: f64,
-    ) -> Result<OpenCriticScan> {
+        min_reviews: i64,
+        min_percent_recommended: f64,
+    ) -> Result<Scan> {
         let mut games = Vec::new();
         let mut pages_requested = 0;
         let mut rate_limit_remaining: Option<String>;
@@ -493,7 +493,7 @@ impl OpenCriticClient {
             let page_len = response.games.len();
 
             games.extend(response.games.into_iter().filter(|game| {
-                game.qualifies(threshold, minimum_reviews, minimum_percent_recommended)
+                game.qualifies(threshold, min_reviews, min_percent_recommended)
             }));
 
             if page_len < 20 || last_score < threshold {
@@ -503,7 +503,7 @@ impl OpenCriticClient {
             skip += 20;
         }
 
-        Ok(OpenCriticScan {
+        Ok(Scan {
             games,
             pages_requested,
             rate_limit_remaining,
@@ -511,7 +511,7 @@ impl OpenCriticClient {
     }
 
     #[tracing::instrument(skip(self), fields(year, skip))]
-    async fn fetch_game_page(&self, year: i32, skip: usize) -> Result<OpenCriticPage> {
+    async fn fetch_game_page(&self, year: i32, skip: usize) -> Result<Page> {
         let started = Instant::now();
         let response = self
             .http
@@ -547,16 +547,16 @@ impl OpenCriticClient {
         if !status.is_success() {
             error!(
                 status = status.as_u16(),
-                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                body = %truncate_bytes(&body, LOG_BODY_TRUNCATE),
                 "opencritic page request failed",
             );
             bail!("OpenCritic request failed with {status}");
         }
 
-        let games = serde_json::from_str::<Vec<OpenCriticGame>>(&body).map_err(|err| {
+        let games = serde_json::from_str::<Vec<Game>>(&body).map_err(|err| {
             error!(
                 error = ?err,
-                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                body = %truncate_bytes(&body, LOG_BODY_TRUNCATE),
                 "opencritic page parse failed",
             );
             anyhow::anyhow!("Failed to parse OpenCritic response: {err}")
@@ -564,7 +564,7 @@ impl OpenCriticClient {
 
         debug!(items = games.len(), "opencritic page parsed");
 
-        Ok(OpenCriticPage {
+        Ok(Page {
             games,
             rate_limit_remaining,
         })
@@ -620,7 +620,7 @@ impl OpenCriticClient {
     }
 }
 
-struct OpenCriticPage {
-    games: Vec<OpenCriticGame>,
+struct Page {
+    games: Vec<Game>,
     rate_limit_remaining: Option<String>,
 }
