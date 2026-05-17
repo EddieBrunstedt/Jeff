@@ -30,7 +30,7 @@ pub struct PollOutcome {
     pub messages_sent: usize,
     pub already_decided: usize,
     pub pages_requested: usize,
-    pub rate_limit_remaining: Option<String>,
+    pub rate_limit_remaining: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,7 +88,7 @@ pub async fn run_poll_cycle(
         )
         .await?;
 
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
     let mut messages_sent = 0;
     let mut already_decided = 0;
     let mut announcements_failed = 0;
@@ -149,7 +149,7 @@ pub async fn run_poll_cycle(
 
             match send_announcement(http, channel_id, &full).await {
                 Ok(message) => {
-                    insert_decision(pool, &full, DecisionStatus::Announced, &now).await?;
+                    insert_decision(pool, &full, DecisionStatus::Announced, now).await?;
                     info!(
                         channel_id = %channel_id,
                         message_id = %message.id,
@@ -183,7 +183,7 @@ pub async fn run_poll_cycle(
                             "Failed to post announcement; recording decision anyway to prevent retry storm",
                         ),
                     }
-                    insert_decision(pool, &full, DecisionStatus::Announced, &now).await?;
+                    insert_decision(pool, &full, DecisionStatus::Announced, now).await?;
                     Ok(GameAction::SendFailed)
                 }
             }
@@ -228,7 +228,7 @@ pub async fn run_poll_cycle(
         announcements_failed,
         already_decided = outcome.already_decided,
         pages_requested = outcome.pages_requested,
-        rate_limit_remaining = outcome.rate_limit_remaining.as_deref(),
+        rate_limit_remaining = outcome.rate_limit_remaining,
         elapsed_ms = started.elapsed().as_millis() as u64,
         "poll cycle complete",
     );
@@ -263,14 +263,14 @@ pub async fn rebaseline(
             subscription.min_percent_recommended,
         )
         .await?;
-    let now = Utc::now().to_rfc3339();
+    let now = Utc::now();
     let mut newly_suppressed = 0;
 
     for game in &scan.games {
         if decision_exists(pool, game.id).await? {
             continue;
         }
-        insert_decision(pool, game, DecisionStatus::BaselineSuppressed, &now).await?;
+        insert_decision(pool, game, DecisionStatus::BaselineSuppressed, now).await?;
         newly_suppressed += 1;
     }
 

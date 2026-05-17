@@ -19,8 +19,7 @@ impl CommandTimer {
     pub fn complete(mut self, outcome: &'static str) {
         info!(
             elapsed_ms = self.started.elapsed().as_millis() as u64,
-            outcome,
-            "command complete",
+            outcome, "command complete",
         );
         self.completed = true;
     }

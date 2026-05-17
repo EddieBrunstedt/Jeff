@@ -201,13 +201,9 @@ pub async fn threshold(
 
     ctx.defer().await?;
 
-    let updated = update_subscription_settings(
-        &data.db,
-        new_score,
-        new_min_reviews,
-        new_min_recommended,
-    )
-    .await?;
+    let updated =
+        update_subscription_settings(&data.db, new_score, new_min_reviews, new_min_recommended)
+            .await?;
     if !updated {
         warn!("subscription disappeared before update could complete");
         ctx.say("Subscription disappeared before the update could complete.")
@@ -360,11 +356,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
         posted += 1;
     }
 
-    info!(
-        posted,
-        failures = failures.len(),
-        "debug_post finished",
-    );
+    info!(posted, failures = failures.len(), "debug_post finished",);
 
     let summary = if failures.is_empty() {
         format!("Posted {posted} debug fixture(s).")
@@ -423,6 +415,7 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
     let rate_limit = data
         .opencritic_client
         .last_rate_limit_remaining()
+        .map(|remaining| remaining.to_string())
         .unwrap_or_else(|| "unknown (no API call yet)".to_string());
 
     let subscribed = get_subscription(&data.db).await?.is_some();

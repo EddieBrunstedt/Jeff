@@ -18,14 +18,14 @@ const RATE_LIMIT_WARN_THRESHOLD: i64 = 20;
 pub struct Client {
     http: reqwest::Client,
     rapidapi_key: String,
-    last_rate_limit_remaining: Arc<Mutex<Option<String>>>,
+    last_rate_limit_remaining: Arc<Mutex<Option<i64>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Scan {
     pub games: Vec<Game>,
     pub pages_requested: usize,
-    pub rate_limit_remaining: Option<String>,
+    pub rate_limit_remaining: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -359,8 +359,8 @@ impl Client {
         }
     }
 
-    pub fn last_rate_limit_remaining(&self) -> Option<String> {
-        self.last_rate_limit_remaining.lock().unwrap().clone()
+    pub fn last_rate_limit_remaining(&self) -> Option<i64> {
+        *self.last_rate_limit_remaining.lock().unwrap()
     }
 
     #[tracing::instrument(skip(self), fields(game_id))]
@@ -387,7 +387,7 @@ impl Client {
             status = status.as_u16(),
             body_bytes = body.len(),
             elapsed_ms = started.elapsed().as_millis() as u64,
-            rate_limit_remaining = rate_limit_remaining.as_deref(),
+            rate_limit_remaining,
             "opencritic game fetched",
         );
         trace!(body = %body, "opencritic game raw response");
@@ -433,12 +433,7 @@ impl Client {
 
         for year in years {
             let year_scan = self
-                .scan_year(
-                    *year,
-                    threshold,
-                    min_reviews,
-                    min_percent_recommended,
-                )
+                .scan_year(*year, threshold, min_reviews, min_percent_recommended)
                 .await
                 .with_context(|| format!("Failed to scan OpenCritic year {year}"))?;
 
@@ -473,7 +468,7 @@ impl Client {
     ) -> Result<Scan> {
         let mut games = Vec::new();
         let mut pages_requested = 0;
-        let mut rate_limit_remaining: Option<String>;
+        let mut rate_limit_remaining;
         let mut skip = 0;
 
         loop {
@@ -492,9 +487,12 @@ impl Client {
                 .unwrap_or_default();
             let page_len = response.games.len();
 
-            games.extend(response.games.into_iter().filter(|game| {
-                game.qualifies(threshold, min_reviews, min_percent_recommended)
-            }));
+            games.extend(
+                response
+                    .games
+                    .into_iter()
+                    .filter(|game| game.qualifies(threshold, min_reviews, min_percent_recommended)),
+            );
 
             if page_len < 20 || last_score < threshold {
                 break;
@@ -539,7 +537,7 @@ impl Client {
             status = status.as_u16(),
             body_bytes = body.len(),
             elapsed_ms = started.elapsed().as_millis() as u64,
-            rate_limit_remaining = rate_limit_remaining.as_deref(),
+            rate_limit_remaining,
             "opencritic page fetched",
         );
         trace!(body = %body, "opencritic page raw response");
@@ -570,32 +568,27 @@ impl Client {
         })
     }
 
-    fn record_rate_limit_remaining(&self, response: &reqwest::Response) -> Option<String> {
+    fn record_rate_limit_remaining(&self, response: &reqwest::Response) -> Option<i64> {
         let rate_limit_remaining = response
             .headers()
             .get("x-ratelimit-requests-remaining")
             .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned)?;
+            .and_then(|value| value.parse::<i64>().ok())?;
 
-        let new_parsed = rate_limit_remaining.parse::<i64>().ok();
         let prior = {
             let mut guard = self.last_rate_limit_remaining.lock().unwrap();
-            let prior = guard.clone();
-            *guard = Some(rate_limit_remaining.clone());
+            let prior = *guard;
+            *guard = Some(rate_limit_remaining);
             prior
         };
 
-        if let Some(n) = new_parsed
-            && n < RATE_LIMIT_WARN_THRESHOLD
-        {
+        if rate_limit_remaining < RATE_LIMIT_WARN_THRESHOLD {
             let prior_above_threshold = prior
-                .as_deref()
-                .and_then(|s| s.parse::<i64>().ok())
-                .map(|p| p >= RATE_LIMIT_WARN_THRESHOLD)
+                .map(|value| value >= RATE_LIMIT_WARN_THRESHOLD)
                 .unwrap_or(true);
             if prior_above_threshold {
                 warn!(
-                    rate_limit_remaining = n,
+                    rate_limit_remaining,
                     threshold = RATE_LIMIT_WARN_THRESHOLD,
                     "OpenCritic rate limit remaining dropped below threshold",
                 );
@@ -622,5 +615,5 @@ impl Client {
 
 struct Page {
     games: Vec<Game>,
-    rate_limit_remaining: Option<String>,
+    rate_limit_remaining: Option<i64>,
 }

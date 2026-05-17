@@ -1,6 +1,4 @@
-use crate::{
-    discord::refresh::RefreshThrottle, opencritic::Client, poller::LastPollSnapshot,
-};
+use crate::{discord::refresh::RefreshThrottle, opencritic::Client, poller::LastPollSnapshot};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};

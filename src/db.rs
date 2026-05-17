@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
 use crate::opencritic::Game;
@@ -18,7 +19,7 @@ impl DecisionStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Subscription {
     pub channel_id: String,
     pub threshold: f64,
@@ -92,7 +93,7 @@ pub async fn insert_decision(
     pool: &SqlitePool,
     game: &Game,
     status: DecisionStatus,
-    decided_at: &str,
+    decided_at: DateTime<Utc>,
 ) -> Result<()> {
     sqlx::query(
         r#"
@@ -126,21 +127,13 @@ pub async fn insert_decision(
 }
 
 pub async fn get_subscription(pool: &SqlitePool) -> Result<Option<Subscription>> {
-    let row: Option<(String, f64, i64, f64)> = sqlx::query_as(
-        "SELECT channel_id, threshold, min_reviews, min_percent_recommended FROM opencritic_subscription WHERE id = 1",
+    sqlx::query_as::<_, Subscription>(
+        "SELECT channel_id, threshold, min_reviews, min_percent_recommended
+         FROM opencritic_subscription WHERE id = 1",
     )
     .fetch_optional(pool)
     .await
-    .context("Failed to load OpenCritic subscription")?;
-
-    Ok(row.map(
-        |(channel_id, threshold, min_reviews, min_percent_recommended)| Subscription {
-            channel_id,
-            threshold,
-            min_reviews,
-            min_percent_recommended,
-        },
-    ))
+    .context("Failed to load OpenCritic subscription")
 }
 
 pub async fn insert_subscription(
