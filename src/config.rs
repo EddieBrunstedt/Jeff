@@ -3,11 +3,28 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use poise::serenity_prelude as serenity;
 
+#[derive(Debug, Clone, Copy)]
+pub enum LogFormat {
+    Pretty,
+    Json,
+}
+
+impl LogFormat {
+    fn from_env() -> Result<Self> {
+        let value = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".to_string());
+        match value.to_ascii_lowercase().as_str() {
+            "json" => Ok(LogFormat::Json),
+            "pretty" => Ok(LogFormat::Pretty),
+            other => bail!("LOG_FORMAT must be 'json' or 'pretty', got '{}'", other),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub discord_token: String,
     pub guild_id: serenity::GuildId,
-    pub pretty_log: bool,
+    pub log_format: LogFormat,
     pub rapidapi_key: String,
     pub database_url: String,
     pub opencritic_poll_interval: Duration,
@@ -24,9 +41,7 @@ impl Config {
             .map(serenity::GuildId::new)
             .context("GUILD_ID must be a valid Discord guild ID")?;
 
-        let pretty_log = std::env::var("PRETTY_LOG")
-            .unwrap_or("false".to_string())
-            .parse()?;
+        let log_format = LogFormat::from_env()?;
 
         let rapidapi_key = get_required_env_var("RAPIDAPI_KEY")?;
 
@@ -51,7 +66,7 @@ impl Config {
         Ok(Config {
             discord_token,
             guild_id,
-            pretty_log,
+            log_format,
             rapidapi_key,
             database_url,
             opencritic_poll_interval: Duration::from_secs(opencritic_poll_interval_seconds),

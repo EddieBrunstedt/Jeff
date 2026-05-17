@@ -25,7 +25,7 @@ async fn main() {
     tracing::initialize_tracing(&config);
 
     if let Err(e) = run_bot(config).await {
-        error!("{}", e.to_string());
+        error!(error = ?e, "Bot exited with error");
         std::process::exit(1);
     }
 }

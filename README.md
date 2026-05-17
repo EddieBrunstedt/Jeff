@@ -25,10 +25,19 @@ Optional:
 
 ```text
 DATABASE_URL=sqlite://jeff.sqlite?mode=rwc
-PRETTY_LOG=false
+LOG_FORMAT=json
+RUST_LOG=info,jeff=debug,serenity=warn,sqlx=warn
 JEFF_ENABLE_DEBUG_POST=false
 JEFF_DISABLE_POLLING=false
 ```
+
+`LOG_FORMAT` accepts `json` (default — one structured object per line, suitable
+for piping into tools like Nushell or `jq`) or `pretty` (human-readable, for
+local `cargo run`).
+
+`RUST_LOG` controls verbosity using the standard `tracing-subscriber` env
+filter. The default if unset is `info,jeff=debug,serenity=warn,sqlx=warn`.
+Set `jeff=trace` to also dump raw HTTP response bodies.
 
 `JEFF_ENABLE_DEBUG_POST=true` registers the `/jeff debug_post` subcommand. It posts three bundled fixture games to the current channel so the alert layout can be iterated on without consuming RapidAPI quota.
 
