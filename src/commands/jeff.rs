@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use tracing::error;
+use tracing::{error, info, warn};
 
 use crate::{
     context::Context,
@@ -39,6 +39,19 @@ pub async fn jeff(_ctx: Context<'_>) -> Result<()> {
 }
 
 #[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "subscribe",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+        score,
+        min_reviews,
+        min_recommended,
+    ),
+)]
 pub async fn subscribe(
     ctx: Context<'_>,
     #[description = "Minimum top critic score required to post (e.g. 85)"]
@@ -53,9 +66,20 @@ pub async fn subscribe(
     #[max = 100.0]
     min_recommended: f64,
 ) -> Result<()> {
+    let started = Instant::now();
+    info!("command received");
     let data = ctx.data();
 
     if let Some(existing) = get_opencritic_subscription(&data.db).await? {
+        info!(
+            existing_channel = %existing.channel_id,
+            existing_threshold = existing.threshold,
+            existing_min_reviews = existing.min_reviews,
+            existing_min_percent_recommended = existing.min_percent_recommended,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "already_subscribed",
+            "command complete",
+        );
         ctx.say(format!(
             "Jeff is already subscribed in <#{}> (score {:.1}, minimum reviews {}, recommended {:.0}%). \
             Use `/jeff threshold` to change values or `/jeff unsubscribe` to disable first.",
@@ -81,11 +105,26 @@ pub async fn subscribe(
     )
     .await?;
 
+    info!(
+        channel_id = %channel_id,
+        threshold = score,
+        min_reviews,
+        min_percent_recommended = min_recommended,
+        "subscription created",
+    );
+
     let subscription = get_opencritic_subscription(&data.db)
         .await?
         .context("Subscription disappeared immediately after insert")?;
 
     let outcome = rebaseline(&data.db, &data.opencritic_client, &subscription).await?;
+
+    info!(
+        newly_suppressed = outcome.newly_suppressed,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        outcome = "ok",
+        "command complete",
+    );
 
     ctx.say(format!(
         "OpenCritic alerts enabled in this channel.\n\
@@ -99,6 +138,19 @@ pub async fn subscribe(
 }
 
 #[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "threshold",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+        requested_score = ?score,
+        requested_min_reviews = ?min_reviews,
+        requested_min_recommended = ?min_recommended,
+    ),
+)]
 pub async fn threshold(
     ctx: Context<'_>,
     #[description = "New minimum top critic score (leave blank to keep current value)"]
@@ -113,15 +165,27 @@ pub async fn threshold(
     #[max = 100.0]
     min_recommended: Option<f64>,
 ) -> Result<()> {
+    let started = Instant::now();
+    info!("command received");
     let data = ctx.data();
 
     let Some(existing) = get_opencritic_subscription(&data.db).await? else {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "not_subscribed",
+            "command complete",
+        );
         ctx.say("Jeff is not subscribed. Use `/jeff subscribe` first.")
             .await?;
         return Ok(());
     };
 
     if score.is_none() && min_reviews.is_none() && min_recommended.is_none() {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "no_change_requested",
+            "command complete",
+        );
         ctx.say("Provide at least one of score, min_reviews, or min_recommended to change.")
             .await?;
         return Ok(());
@@ -135,6 +199,11 @@ pub async fn threshold(
         && new_min_reviews == existing.min_reviews
         && (new_min_recommended - existing.min_percent_recommended).abs() < f64::EPSILON
     {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "no_op",
+            "command complete",
+        );
         ctx.say(format!(
             "Settings are already score {:.1} / {} reviews / {:.0}% recommended. No change.",
             existing.threshold, existing.min_reviews, existing.min_percent_recommended,
@@ -153,16 +222,38 @@ pub async fn threshold(
     )
     .await?;
     if !updated {
+        warn!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "subscription_vanished",
+            "command complete",
+        );
         ctx.say("Subscription disappeared before the update could complete.")
             .await?;
         return Ok(());
     }
+
+    info!(
+        prev_threshold = existing.threshold,
+        prev_min_reviews = existing.min_reviews,
+        prev_min_percent_recommended = existing.min_percent_recommended,
+        threshold = new_score,
+        min_reviews = new_min_reviews,
+        min_percent_recommended = new_min_recommended,
+        "subscription updated",
+    );
 
     let subscription = get_opencritic_subscription(&data.db)
         .await?
         .context("Subscription disappeared immediately after update")?;
 
     let outcome = rebaseline(&data.db, &data.opencritic_client, &subscription).await?;
+
+    info!(
+        newly_suppressed = outcome.newly_suppressed,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        outcome = "ok",
+        "command complete",
+    );
 
     ctx.say(format!(
         "Thresholds updated.\n\
@@ -183,12 +274,34 @@ pub async fn threshold(
 }
 
 #[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "unsubscribe",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+    ),
+)]
 pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
+    let started = Instant::now();
+    info!("command received");
     let removed = delete_opencritic_subscription(&ctx.data().db).await?;
 
     if removed {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "ok",
+            "subscription deleted",
+        );
         ctx.say("OpenCritic alerts disabled.").await?;
     } else {
+        info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            outcome = "not_subscribed",
+            "command complete",
+        );
         ctx.say("Jeff was not subscribed.").await?;
     }
 
@@ -196,10 +309,22 @@ pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
 }
 
 #[poise::command(slash_command)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "status",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+    ),
+)]
 pub async fn status(ctx: Context<'_>) -> Result<()> {
+    let started = Instant::now();
+    info!("command received");
     let subscription = get_opencritic_subscription(&ctx.data().db).await?;
 
-    let message = match subscription {
+    let message = match &subscription {
         Some(sub) => format!(
             "Jeff is subscribed in <#{}>.\nScore: {:.1} | Minimum reviews: {} | Minimum recommended: {:.0}%",
             sub.channel_id, sub.threshold, sub.min_reviews, sub.min_percent_recommended,
@@ -207,13 +332,32 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
         None => "Jeff is not subscribed. Use `/jeff subscribe` to enable alerts.".to_string(),
     };
 
+    info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        subscribed = subscription.is_some(),
+        outcome = "ok",
+        "command complete",
+    );
+
     ctx.say(message).await?;
 
     Ok(())
 }
 
 #[poise::command(slash_command, default_member_permissions = "MANAGE_CHANNELS")]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "debug_post",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+    ),
+)]
 pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
+    let started = Instant::now();
+    info!(fixtures = DEBUG_FIXTURES.len(), "command received");
     ctx.defer().await?;
 
     let channel_id = ctx.channel_id();
@@ -226,20 +370,33 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
         let game: OpenCriticGame = match serde_json::from_str(raw) {
             Ok(game) => game,
             Err(err) => {
-                error!(fixture = label, error = %err, "debug_post: failed to parse fixture");
+                error!(fixture = label, error = ?err, "debug_post: failed to parse fixture");
                 failures.push(format!("{label}: parse failed ({err})"));
                 continue;
             }
         };
 
         if let Err(err) = send_opencritic_announcement(&http, channel_id, &game).await {
-            error!(fixture = label, error = %err, "debug_post: failed to send");
+            error!(
+                fixture = label,
+                game_id = game.id,
+                error = ?err,
+                "debug_post: failed to send"
+            );
             failures.push(format!("{label}: send failed ({err})"));
             continue;
         }
 
         posted += 1;
     }
+
+    info!(
+        posted,
+        failures = failures.len(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        outcome = if failures.is_empty() { "ok" } else { "partial" },
+        "command complete",
+    );
 
     let summary = if failures.is_empty() {
         format!("Posted {posted} debug fixture(s).")
@@ -255,7 +412,19 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
 }
 
 #[poise::command(slash_command)]
+#[tracing::instrument(
+    skip_all,
+    fields(
+        command = "health",
+        user_id = %ctx.author().id,
+        channel_id = %ctx.channel_id(),
+        guild_id = ?ctx.guild_id().map(|g| g.get()),
+        interaction_id = ctx.id(),
+    ),
+)]
 pub async fn health(ctx: Context<'_>) -> Result<()> {
+    let started = Instant::now();
+    info!("command received");
     ctx.defer().await?;
 
     let data = ctx.data();
@@ -269,7 +438,7 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
     let db_start = Instant::now();
     let db_result = ping(&data.db).await;
     let db_elapsed = db_start.elapsed();
-    let db_status = match db_result {
+    let db_status = match &db_result {
         Ok(()) => format!("ok ({}ms)", db_elapsed.as_millis()),
         Err(err) => format!("error: {err}"),
     };
@@ -305,6 +474,18 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
         }
         None => "none yet".to_string(),
     };
+
+    info!(
+        uptime_ms = uptime.as_millis() as u64,
+        db_ok = db_result.is_ok(),
+        db_elapsed_ms = db_elapsed.as_millis() as u64,
+        shard_latency_ms = shard_latency.map(|d| d.as_millis() as u64),
+        rate_limit_remaining = %rate_limit,
+        subscribed,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        outcome = "ok",
+        "command complete",
+    );
 
     ctx.say(format!(
         "Health check:\n\
