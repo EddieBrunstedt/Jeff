@@ -128,8 +128,6 @@ pub struct OpenCriticGame {
     pub genres: Vec<OpenCriticGenre>,
     #[serde(default, rename = "Companies", alias = "companies")]
     pub companies: Vec<OpenCriticCompany>,
-    #[serde(default, rename = "latestReviewDate")]
-    pub latest_review_date: Option<String>,
 }
 
 impl OpenCriticGame {
@@ -248,9 +246,6 @@ impl OpenCriticGame {
         }
         if self.companies.is_empty() {
             self.companies = fallback.companies.clone();
-        }
-        if optional_string_is_empty(&self.latest_review_date) {
-            self.latest_review_date = fallback.latest_review_date.clone();
         }
     }
 

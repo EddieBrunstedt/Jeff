@@ -391,18 +391,9 @@ pub fn build_opencritic_embed(game: &OpenCriticGame) -> serenity::CreateEmbed {
         true,
     );
 
-    if let Some(latest) = game
-        .latest_review_date
-        .as_deref()
-        .and_then(non_empty_str)
-        .map(format_opencritic_date)
-    {
-        embed = embed.footer(serenity::CreateEmbedFooter::new(format!(
-            "Latest review · {latest}"
-        )));
-    }
-
-    embed = embed.timestamp(Utc::now());
+    embed = embed
+        .footer(serenity::CreateEmbedFooter::new("Last refreshed"))
+        .timestamp(Utc::now());
 
     embed
 }
