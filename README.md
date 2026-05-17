@@ -1,77 +1,174 @@
 # Jeff
 
-A Discord bot that watches OpenCritic and posts in a channel when a PC game's top critic score crosses a configured threshold. Written in Rust.
+> A focused Discord bot for surfacing the PC games that are breaking through on OpenCritic.
+
+![Rust](https://img.shields.io/badge/Rust-2024-orange)
+![Discord](https://img.shields.io/badge/Discord-slash%20commands-5865F2)
+![OpenCritic](https://img.shields.io/badge/OpenCritic-powered-blue)
+
+Jeff watches OpenCritic, applies your quality gates, and posts polished Discord alerts when a PC game crosses the line. It is built for low-noise game discovery: subscribe once, snapshot the current backlog, then only hear about future threshold crossings.
+
+## Highlights
+
+- **Signal-first alerts**: gate on critic average, review count, and critics-recommended percentage.
+- **No backlog spam**: subscribing or changing thresholds baselines already-qualifying games instead of dumping old results into chat.
+- **Rich Discord embeds**: score, tier, reviews, recommendation percentage, release date, genres, developer, publisher, artwork, OpenCritic link, and Steam search.
+- **One-click refresh**: each announcement includes a Refresh button that re-fetches OpenCritic details and edits the embed in place.
+- **Operationally safe**: SQLite persistence, structured logs, health checks, quota visibility, channel-gone auto-unsubscribe, and retry-storm protection.
+- **Guild-scoped slash commands**: commands are registered directly to your configured server for fast iteration.
+
+## How it works
+
+1. Jeff registers `/jeff` slash commands in the configured Discord guild.
+2. An admin subscribes a channel with explicit thresholds.
+3. Jeff scans PC games from the current and previous calendar year and records the current qualifying set as a baseline.
+4. A background poll repeats on your configured interval.
+5. When a not-yet-seen game qualifies, Jeff fetches full game details, posts an announcement, and records the decision in SQLite.
+
+Jeff currently supports **one active subscription channel** per running bot instance.
 
 ## Requirements
 
-- Rust toolchain (stable)
-- A Discord bot application from <https://discord.com/developers/applications>. When generating the invite URL (OAuth2 → URL Generator in the developer portal), tick both the `bot` and `applications.commands` scopes — `bot` lets the application join the server, `applications.commands` is what makes the `/jeff` commands appear. Also grant the bot permission to send messages and embed links in the target channel.
-- A RapidAPI account with access to the OpenCritic API (<https://rapidapi.com/digiwalls/api/opencritic-api>). The free tier allows 200 requests/day.
+- A recent stable Rust toolchain with Rust 2024 edition support.
+- A Discord application and bot token from <https://discord.com/developers/applications>.
+- A RapidAPI key with access to the OpenCritic API: <https://rapidapi.com/digiwalls/api/opencritic-api>.
+- A Discord server ID (`GUILD_ID`) where commands should be registered.
 
-## Configuration
+When creating the Discord invite URL, enable both OAuth2 scopes:
 
-Required environment variables:
+- `bot`
+- `applications.commands`
 
-```text
-DISCORD_TOKEN=
-GUILD_ID=
-RAPIDAPI_KEY=
-OPENCRITIC_POLL_INTERVAL_SECONDS=
+The bot needs these channel permissions where alerts will be posted:
+
+- View Channel
+- Send Messages
+- Embed Links
+
+## Quick start
+
+```bash
+git clone <repo-url>
+cd jeff
+cargo build --release
 ```
 
-Each poll typically costs ~6 RapidAPI requests. On the free 200-requests/day tier, intervals of `7200` (2h) or longer leave comfortable headroom.
+Create your environment configuration:
 
-Optional:
+```bash
+export DISCORD_TOKEN="your-discord-bot-token"
+export GUILD_ID="123456789012345678"
+export RAPIDAPI_KEY="your-rapidapi-key"
+export OPENCRITIC_POLL_INTERVAL_SECONDS="21600"
 
-```text
-DATABASE_URL=sqlite://jeff.sqlite?mode=rwc
-LOG_FORMAT=json
-RUST_LOG=info,jeff=debug,serenity=warn,sqlx=warn
-JEFF_ENABLE_DEBUG_POST=false
-JEFF_DISABLE_POLLING=false
-JEFF_REFRESH_COOLDOWN_SECONDS=60
+# Optional but useful for local development
+export LOG_FORMAT="pretty"
+export RUST_LOG="info,jeff=debug,serenity=warn,sqlx=warn"
 ```
 
-`LOG_FORMAT` accepts `json` (default — one structured object per line, suitable
-for piping into tools like Nushell or `jq`) or `pretty` (human-readable, for
-local `cargo run`).
-
-`RUST_LOG` controls verbosity using the standard `tracing-subscriber` env
-filter. The default if unset is `info,jeff=debug,serenity=warn,sqlx=warn`.
-Set `jeff=trace` to also dump raw HTTP response bodies.
-
-`JEFF_ENABLE_DEBUG_POST=true` registers the `/jeff debug_post` subcommand. It posts three bundled fixture games to the current channel so the alert layout can be iterated on without consuming RapidAPI quota.
-
-`JEFF_DISABLE_POLLING=true` skips spawning the background OpenCritic poller. Useful during local development so restarts don't burn RapidAPI quota on automatic scans. Slash commands and the Refresh button still work.
-
-`JEFF_REFRESH_COOLDOWN_SECONDS` is the minimum number of seconds between successful Refresh-button presses on the same announcement. Default `60`. Set to `0` to disable. Tracked in-memory per game, resets on bot restart.
-
-## Build and run
+Run the bot:
 
 ```bash
 cargo run --release
 ```
 
-Slash commands are registered to the guild specified by `GUILD_ID` on startup. The bot supports a single subscribed channel at a time.
+Then subscribe the current Discord channel:
+
+```text
+/jeff subscribe score:80 min_reviews:10 min_recommended:70
+```
+
+Slash commands are registered on startup. Because Jeff uses guild-scoped commands, they should appear quickly after the bot connects.
+
+## Configuration
+
+### Required
+
+| Variable                           | Description                                                    |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `DISCORD_TOKEN`                    | Discord bot token. Keep it secret.                             |
+| `GUILD_ID`                         | Discord guild/server ID where `/jeff` commands are registered. |
+| `RAPIDAPI_KEY`                     | RapidAPI key used for OpenCritic requests.                     |
+| `OPENCRITIC_POLL_INTERVAL_SECONDS` | Delay between scheduled OpenCritic scans.                      |
+
+### Optional
+
+| Variable                        | Default                                   | Description                                                                                       |
+| ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                  | `sqlite://jeff.sqlite?mode=rwc`           | SQLite database URL. Tables are created automatically.                                            |
+| `LOG_FORMAT`                    | `json`                                    | `json` for structured logs or `pretty` for local readable logs.                                   |
+| `RUST_LOG`                      | `info,jeff=debug,serenity=warn,sqlx=warn` | Standard `tracing-subscriber` filter. Use `jeff=trace` to include raw OpenCritic response bodies. |
+| `JEFF_ENABLE_DEBUG_POST`        | `false`                                   | Registers `/jeff debug_post`, which posts bundled fixture alerts without using RapidAPI.          |
+| `JEFF_DISABLE_POLLING`          | `false`                                   | Prevents the background poller from starting. Slash commands and Refresh still work.              |
+| `JEFF_REFRESH_COOLDOWN_SECONDS` | `60`                                      | Per-game Refresh button cooldown. Set to `0` to disable. Stored in memory and reset on restart.   |
+
+### Poll interval and API quota
+
+A scan requests OpenCritic list pages for the current and previous year. New announcements and manual refreshes make extra detail requests. If your RapidAPI plan is limited, choose a conservative interval and watch `/jeff health` plus the RapidAPI dashboard.
+
+For a 200 requests/day plan, `7200` seconds (2 hours) or longer is a sensible starting point.
 
 ## Commands
 
-```text
-/jeff subscribe score:<n> min_reviews:<n> min_recommended:<n>
-/jeff threshold [score:<n>] [min_reviews:<n>] [min_recommended:<n>]
-/jeff unsubscribe
-/jeff status
-/jeff health
+| Command                                                               | Permission            | What it does                                                                                           |
+| --------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `/jeff subscribe score:<n> min_reviews:<n> min_recommended:<n>`       | Manage Channels       | Enables alerts in the current channel and baselines existing matches.                                  |
+| `/jeff threshold [score:<n>] [min_reviews:<n>] [min_recommended:<n>]` | Manage Channels       | Updates one or more gates and baselines newly qualifying games.                                        |
+| `/jeff unsubscribe`                                                   | Manage Channels       | Disables alerts and removes the active subscription.                                                   |
+| `/jeff status`                                                        | None enforced by Jeff | Shows the active subscription and thresholds.                                                          |
+| `/jeff health`                                                        | None enforced by Jeff | Reports uptime, database status, Discord latency, OpenCritic quota, subscription state, and last poll. |
+| `/jeff debug_post`                                                    | Manage Channels       | Development-only fixture poster. Registered only when `JEFF_ENABLE_DEBUG_POST=true`.                   |
+
+Threshold ranges:
+
+- `score`: `1.0` to `100.0`
+- `min_reviews`: `1` or greater
+- `min_recommended`: `0.0` to `100.0`
+
+## Alert behavior
+
+Jeff records every qualifying game decision in `opencritic_decisions`:
+
+- `baseline_suppressed`: the game already qualified when subscribing or rebaselining.
+- `announced`: Jeff attempted to announce the game.
+
+This is intentional. If Discord rejects an announcement for a transient channel/message error, Jeff records the game anyway to avoid repeatedly posting or retrying the same alert forever. If Discord reports that the channel no longer exists, Jeff automatically unsubscribes instead.
+
+## Development workflow
+
+Recommended local settings:
+
+```bash
+export LOG_FORMAT="pretty"
+export JEFF_DISABLE_POLLING="true"
+export JEFF_ENABLE_DEBUG_POST="true"
 ```
 
-`/jeff subscribe` enables alerts in the current channel for games whose top critic score is at or above `score`, which have at least `min_reviews` reviews, and whose critics-recommended percentage is at or above `min_recommended` (0–100). All three parameters are mandatory — the admin must set each axis explicitly. The bot scans OpenCritic for PC games released in the current and previous calendar year. Games that already meet the gate at subscribe time are recorded as known so they do not post — only future threshold crossings produce alerts.
+Useful commands:
 
-`/jeff threshold` updates one or more values of the active subscription. Each parameter is optional; omitted values keep their current setting. Lowering any threshold records any games that newly qualify as known (no announcement) so the channel does not get flooded with a backlog. Raising values does not unrecord anything — games already announced stay announced.
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features
+cargo test
+cargo run
+```
 
-`/jeff unsubscribe` disables alerts.
+With `JEFF_ENABLE_DEBUG_POST=true`, use this command in Discord to preview announcement layout without spending OpenCritic quota:
 
-`/jeff status` shows the current subscription state.
+```text
+/jeff debug_post
+```
 
-`/jeff health` reports bot health (uptime, database, gateway latency, OpenCritic API quota, last poll).
+## Project map
 
-The configuration commands (`subscribe`, `threshold`, `unsubscribe`) require the **Manage Channels** permission.
+| Path                     | Responsibility                                                         |
+| ------------------------ | ---------------------------------------------------------------------- |
+| `src/main.rs`            | Startup, Discord client, command registration, event routing.          |
+| `src/config.rs`          | Environment parsing and defaults.                                      |
+| `src/db.rs`              | SQLite connection, schema creation, subscription and decision storage. |
+| `src/opencritic.rs`      | RapidAPI/OpenCritic client, scan logic, game normalization.            |
+| `src/poller.rs`          | Scheduled scans, baselining, announcement decisions.                   |
+| `src/commands/jeff.rs`   | `/jeff` slash commands.                                                |
+| `src/discord/embed.rs`   | Announcement embed construction.                                       |
+| `src/discord/refresh.rs` | Refresh button handling and cooldowns.                                 |
+| `fixtures/opencritic/`   | Local OpenCritic game payloads for debug posts.                        |
