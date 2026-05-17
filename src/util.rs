@@ -1,5 +1,16 @@
 use std::time::Duration;
 
+pub fn truncate_for_log(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…[+{} bytes]", &value[..end], value.len() - end)
+}
+
 pub fn humanize_duration(d: Duration) -> String {
     let secs = d.as_secs();
     let days = secs / 86_400;

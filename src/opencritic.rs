@@ -1,11 +1,18 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::Deserialize;
+use tracing::{debug, error, trace, warn};
+
+use crate::util::truncate_for_log;
+
+const LOG_BODY_TRUNCATE: usize = 2048;
+const RATE_LIMIT_WARN_THRESHOLD: i64 = 20;
 
 #[derive(Debug, Clone)]
 pub struct OpenCriticClient {
@@ -361,34 +368,63 @@ impl OpenCriticClient {
         self.last_rate_limit_remaining.lock().unwrap().clone()
     }
 
+    #[tracing::instrument(skip(self), fields(game_id))]
     pub async fn fetch_game(&self, game_id: i64) -> Result<OpenCriticGame> {
+        let url = format!("https://opencritic-api.p.rapidapi.com/game/{game_id}");
+        let started = Instant::now();
         let response = self
             .http
-            .get(format!(
-                "https://opencritic-api.p.rapidapi.com/game/{game_id}"
-            ))
+            .get(&url)
             .headers(self.headers()?)
             .send()
             .await
             .context("Failed to send OpenCritic game details request")?;
 
         let status = response.status();
-        self.record_rate_limit_remaining(&response);
+        let rate_limit_remaining = self.record_rate_limit_remaining(&response);
+
+        let body = response
+            .text()
+            .await
+            .context("Failed to read OpenCritic game details response body")?;
+
+        debug!(
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            rate_limit_remaining = rate_limit_remaining.as_deref(),
+            "opencritic game fetched",
+        );
+        trace!(body = %body, "opencritic game raw response");
 
         if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read response body>".to_string());
-            bail!("OpenCritic game details request failed with {status}: {body}");
+            error!(
+                status = status.as_u16(),
+                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                "opencritic game request failed",
+            );
+            bail!("OpenCritic game details request failed with {status}");
         }
 
-        response
-            .json::<OpenCriticGame>()
-            .await
-            .context("Failed to parse OpenCritic game details response")
+        serde_json::from_str::<OpenCriticGame>(&body).map_err(|err| {
+            error!(
+                error = ?err,
+                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                "opencritic game parse failed",
+            );
+            anyhow::anyhow!("Failed to parse OpenCritic game details response: {err}")
+        })
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            years = ?years,
+            threshold,
+            minimum_reviews,
+            minimum_percent_recommended,
+        ),
+    )]
     pub async fn scan_years(
         &self,
         years: &[i32],
@@ -429,6 +465,10 @@ impl OpenCriticClient {
         })
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(year, threshold, minimum_reviews, minimum_percent_recommended)
+    )]
     async fn scan_year(
         &self,
         year: i32,
@@ -475,7 +515,9 @@ impl OpenCriticClient {
         })
     }
 
+    #[tracing::instrument(skip(self), fields(year, skip))]
     async fn fetch_game_page(&self, year: i32, skip: usize) -> Result<OpenCriticPage> {
+        let started = Instant::now();
         let response = self
             .http
             .get("https://opencritic-api.p.rapidapi.com/game")
@@ -493,18 +535,39 @@ impl OpenCriticClient {
         let status = response.status();
         let rate_limit_remaining = self.record_rate_limit_remaining(&response);
 
+        let body = response
+            .text()
+            .await
+            .context("Failed to read OpenCritic page response body")?;
+
+        debug!(
+            status = status.as_u16(),
+            body_bytes = body.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            rate_limit_remaining = rate_limit_remaining.as_deref(),
+            "opencritic page fetched",
+        );
+        trace!(body = %body, "opencritic page raw response");
+
         if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .unwrap_or_else(|_| "<failed to read response body>".to_string());
-            bail!("OpenCritic request failed with {status}: {body}");
+            error!(
+                status = status.as_u16(),
+                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                "opencritic page request failed",
+            );
+            bail!("OpenCritic request failed with {status}");
         }
 
-        let games = response
-            .json::<Vec<OpenCriticGame>>()
-            .await
-            .context("Failed to parse OpenCritic response")?;
+        let games = serde_json::from_str::<Vec<OpenCriticGame>>(&body).map_err(|err| {
+            error!(
+                error = ?err,
+                body = %truncate_for_log(&body, LOG_BODY_TRUNCATE),
+                "opencritic page parse failed",
+            );
+            anyhow::anyhow!("Failed to parse OpenCritic response: {err}")
+        })?;
+
+        debug!(items = games.len(), "opencritic page parsed");
 
         Ok(OpenCriticPage {
             games,
@@ -517,11 +580,34 @@ impl OpenCriticClient {
             .headers()
             .get("x-ratelimit-requests-remaining")
             .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        if let Some(value) = &rate_limit_remaining {
-            *self.last_rate_limit_remaining.lock().unwrap() = Some(value.clone());
+            .map(ToOwned::to_owned)?;
+
+        let new_parsed = rate_limit_remaining.parse::<i64>().ok();
+        let prior = {
+            let mut guard = self.last_rate_limit_remaining.lock().unwrap();
+            let prior = guard.clone();
+            *guard = Some(rate_limit_remaining.clone());
+            prior
+        };
+
+        if let Some(n) = new_parsed
+            && n < RATE_LIMIT_WARN_THRESHOLD
+        {
+            let prior_above_threshold = prior
+                .as_deref()
+                .and_then(|s| s.parse::<i64>().ok())
+                .map(|p| p >= RATE_LIMIT_WARN_THRESHOLD)
+                .unwrap_or(true);
+            if prior_above_threshold {
+                warn!(
+                    rate_limit_remaining = n,
+                    threshold = RATE_LIMIT_WARN_THRESHOLD,
+                    "OpenCritic rate limit remaining dropped below threshold",
+                );
+            }
         }
-        rate_limit_remaining
+
+        Some(rate_limit_remaining)
     }
 
     fn headers(&self) -> Result<HeaderMap> {
