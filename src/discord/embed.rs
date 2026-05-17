@@ -43,7 +43,7 @@ pub fn build_announcement_embed(game: &Game) -> serenity::CreateEmbed {
     embed = embed
         .field(
             "Critic Average",
-            format!("{:.1}", game.top_critic_score),
+            format!("{:.0}", game.top_critic_score),
             true,
         )
         .field(
