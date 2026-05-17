@@ -75,7 +75,7 @@ cargo run --release
 Then subscribe the current Discord channel:
 
 ```text
-/jeff subscribe score:80 min_reviews:10 min_recommended:70
+/jeff subscribe min_score:80 min_reviews:10 min_recommended:70
 ```
 
 Slash commands are registered on startup. Because Jeff uses guild-scoped commands, they should appear quickly after the bot connects.
@@ -112,8 +112,8 @@ For a 200 requests/day plan, `7200` seconds (2 hours) or longer is a sensible st
 
 | Command                                                               | Permission            | What it does                                                                                           |
 | --------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------ |
-| `/jeff subscribe score:<n> min_reviews:<n> min_recommended:<n>`       | Manage Channels       | Enables alerts in the current channel and baselines existing matches.                                  |
-| `/jeff threshold [score:<n>] [min_reviews:<n>] [min_recommended:<n>]` | Manage Channels       | Updates one or more gates and baselines newly qualifying games.                                        |
+| `/jeff subscribe min_score:<n> min_reviews:<n> min_recommended:<n>`   | Manage Channels       | Enables alerts in the current channel and baselines existing matches.                                  |
+| `/jeff threshold [min_score:<n>] [min_reviews:<n>] [min_recommended:<n>]` | Manage Channels    | Updates one or more gates and baselines newly qualifying games.                                        |
 | `/jeff unsubscribe`                                                   | Manage Channels       | Disables alerts and removes the active subscription.                                                   |
 | `/jeff status`                                                        | None enforced by Jeff | Shows the active subscription and thresholds.                                                          |
 | `/jeff health`                                                        | None enforced by Jeff | Reports uptime, database status, Discord latency, OpenCritic quota, subscription state, and last poll. |
@@ -121,7 +121,7 @@ For a 200 requests/day plan, `7200` seconds (2 hours) or longer is a sensible st
 
 Threshold ranges:
 
-- `score`: `1.0` to `100.0`
+- `min_score`: `1.0` to `100.0`
 - `min_reviews`: `1` or greater
 - `min_recommended`: `0.0` to `100.0`
 
