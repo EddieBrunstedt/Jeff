@@ -16,6 +16,8 @@ use crate::{
     util::humanize_duration,
 };
 
+use super::audit::CommandTimer;
+
 const DEBUG_FIXTURES: &[(&str, &str)] = &[
     (
         "game_17732",
@@ -67,8 +69,7 @@ pub async fn subscribe(
     #[max = 100.0]
     min_recommended: f64,
 ) -> Result<()> {
-    let started = Instant::now();
-    info!("command received");
+    let timer = CommandTimer::start();
     let data = ctx.data();
 
     if let Some(existing) = get_subscription(&data.db).await? {
@@ -77,9 +78,7 @@ pub async fn subscribe(
             existing_threshold = existing.threshold,
             existing_min_reviews = existing.min_reviews,
             existing_min_percent_recommended = existing.min_percent_recommended,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "already_subscribed",
-            "command complete",
+            "subscribe attempted while already subscribed",
         );
         ctx.say(format!(
             "Jeff is already subscribed in <#{}> (score {:.1}, minimum reviews {}, recommended {:.0}%). \
@@ -90,6 +89,7 @@ pub async fn subscribe(
             existing.min_percent_recommended,
         ))
         .await?;
+        timer.complete("already_subscribed");
         return Ok(());
     }
 
@@ -122,9 +122,7 @@ pub async fn subscribe(
 
     info!(
         newly_suppressed = outcome.newly_suppressed,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        outcome = "ok",
-        "command complete",
+        "baseline snapshot recorded",
     );
 
     ctx.say(format!(
@@ -135,6 +133,7 @@ pub async fn subscribe(
     ))
     .await?;
 
+    timer.complete("ok");
     Ok(())
 }
 
@@ -166,29 +165,20 @@ pub async fn threshold(
     #[max = 100.0]
     min_recommended: Option<f64>,
 ) -> Result<()> {
-    let started = Instant::now();
-    info!("command received");
+    let timer = CommandTimer::start();
     let data = ctx.data();
 
     let Some(existing) = get_subscription(&data.db).await? else {
-        info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "not_subscribed",
-            "command complete",
-        );
         ctx.say("Jeff is not subscribed. Use `/jeff subscribe` first.")
             .await?;
+        timer.complete("not_subscribed");
         return Ok(());
     };
 
     if score.is_none() && min_reviews.is_none() && min_recommended.is_none() {
-        info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "no_change_requested",
-            "command complete",
-        );
         ctx.say("Provide at least one of score, min_reviews, or min_recommended to change.")
             .await?;
+        timer.complete("no_change_requested");
         return Ok(());
     }
 
@@ -200,16 +190,12 @@ pub async fn threshold(
         && new_min_reviews == existing.min_reviews
         && (new_min_recommended - existing.min_percent_recommended).abs() < f64::EPSILON
     {
-        info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "no_op",
-            "command complete",
-        );
         ctx.say(format!(
             "Settings are already score {:.1} / {} reviews / {:.0}% recommended. No change.",
             existing.threshold, existing.min_reviews, existing.min_percent_recommended,
         ))
         .await?;
+        timer.complete("no_op");
         return Ok(());
     }
 
@@ -223,13 +209,10 @@ pub async fn threshold(
     )
     .await?;
     if !updated {
-        warn!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "subscription_vanished",
-            "command complete",
-        );
+        warn!("subscription disappeared before update could complete");
         ctx.say("Subscription disappeared before the update could complete.")
             .await?;
+        timer.complete("subscription_vanished");
         return Ok(());
     }
 
@@ -251,9 +234,7 @@ pub async fn threshold(
 
     info!(
         newly_suppressed = outcome.newly_suppressed,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        outcome = "ok",
-        "command complete",
+        "baseline snapshot recorded",
     );
 
     ctx.say(format!(
@@ -271,6 +252,7 @@ pub async fn threshold(
     ))
     .await?;
 
+    timer.complete("ok");
     Ok(())
 }
 
@@ -286,24 +268,16 @@ pub async fn threshold(
     ),
 )]
 pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
-    let started = Instant::now();
-    info!("command received");
+    let timer = CommandTimer::start();
     let removed = delete_subscription(&ctx.data().db).await?;
 
     if removed {
-        info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "ok",
-            "subscription deleted",
-        );
+        info!("subscription deleted");
         ctx.say("OpenCritic alerts disabled.").await?;
+        timer.complete("ok");
     } else {
-        info!(
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            outcome = "not_subscribed",
-            "command complete",
-        );
         ctx.say("Jeff was not subscribed.").await?;
+        timer.complete("not_subscribed");
     }
 
     Ok(())
@@ -321,8 +295,7 @@ pub async fn unsubscribe(ctx: Context<'_>) -> Result<()> {
     ),
 )]
 pub async fn status(ctx: Context<'_>) -> Result<()> {
-    let started = Instant::now();
-    info!("command received");
+    let timer = CommandTimer::start();
     let subscription = get_subscription(&ctx.data().db).await?;
 
     let message = match &subscription {
@@ -333,14 +306,10 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
         None => "Jeff is not subscribed. Use `/jeff subscribe` to enable alerts.".to_string(),
     };
 
-    info!(
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        subscribed = subscription.is_some(),
-        outcome = "ok",
-        "command complete",
-    );
+    info!(subscribed = subscription.is_some(), "status reported");
 
     ctx.say(message).await?;
+    timer.complete("ok");
 
     Ok(())
 }
@@ -357,8 +326,8 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
     ),
 )]
 pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
-    let started = Instant::now();
-    info!(fixtures = DEBUG_FIXTURES.len(), "command received");
+    let timer = CommandTimer::start();
+    info!(fixtures = DEBUG_FIXTURES.len(), "debug_post started");
     ctx.defer().await?;
 
     let channel_id = ctx.channel_id();
@@ -394,9 +363,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
     info!(
         posted,
         failures = failures.len(),
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        outcome = if failures.is_empty() { "ok" } else { "partial" },
-        "command complete",
+        "debug_post finished",
     );
 
     let summary = if failures.is_empty() {
@@ -409,6 +376,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
     };
 
     ctx.say(summary).await?;
+    timer.complete(if failures.is_empty() { "ok" } else { "partial" });
     Ok(())
 }
 
@@ -424,8 +392,7 @@ pub async fn debug_post(ctx: Context<'_>) -> Result<()> {
     ),
 )]
 pub async fn health(ctx: Context<'_>) -> Result<()> {
-    let started = Instant::now();
-    info!("command received");
+    let timer = CommandTimer::start();
     ctx.defer().await?;
 
     let data = ctx.data();
@@ -483,9 +450,7 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
         shard_latency_ms = shard_latency.map(|d| d.as_millis() as u64),
         rate_limit_remaining = %rate_limit,
         subscribed,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        outcome = "ok",
-        "command complete",
+        "health snapshot",
     );
 
     ctx.say(format!(
@@ -505,5 +470,6 @@ pub async fn health(ctx: Context<'_>) -> Result<()> {
     ))
     .await?;
 
+    timer.complete("ok");
     Ok(())
 }
