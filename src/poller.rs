@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Datelike, Utc};
@@ -310,6 +312,48 @@ pub async fn rebaseline(
 const DESCRIPTION_MAX_LEN: usize = 400;
 pub const REFRESH_BUTTON_PREFIX: &str = "refresh_game:";
 
+pub struct RefreshThrottle {
+    cooldown: Duration,
+    last_press: Mutex<HashMap<i64, Instant>>,
+}
+
+impl RefreshThrottle {
+    pub fn new(cooldown: Duration) -> Self {
+        Self {
+            cooldown,
+            last_press: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn cooldown(&self) -> Duration {
+        self.cooldown
+    }
+
+    pub fn check(&self, game_id: i64) -> Result<(), Duration> {
+        if self.cooldown.is_zero() {
+            return Ok(());
+        }
+        let map = self.last_press.lock().unwrap();
+        if let Some(last) = map.get(&game_id) {
+            let elapsed = last.elapsed();
+            if elapsed < self.cooldown {
+                return Err(self.cooldown - elapsed);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn record(&self, game_id: i64) {
+        if self.cooldown.is_zero() {
+            return;
+        }
+        self.last_press
+            .lock()
+            .unwrap()
+            .insert(game_id, Instant::now());
+    }
+}
+
 pub fn build_opencritic_embed(game: &OpenCriticGame) -> serenity::CreateEmbed {
     let url = game
         .url
@@ -487,6 +531,7 @@ pub async fn handle_refresh_button(
     ctx: &serenity::Context,
     interaction: &serenity::ComponentInteraction,
     client: &OpenCriticClient,
+    throttle: &RefreshThrottle,
 ) -> Result<()> {
     let Some(game_id_str) = interaction
         .data
@@ -506,6 +551,29 @@ pub async fn handle_refresh_button(
 
     tracing::Span::current().record("game_id", game_id);
     info!("Refresh requested");
+
+    if let Err(remaining) = throttle.check(game_id) {
+        let remaining_secs = remaining.as_secs().max(1);
+        info!(
+            remaining_secs,
+            cooldown_secs = throttle.cooldown().as_secs(),
+            "Refresh denied (cooldown)",
+        );
+        interaction
+            .create_response(
+                &ctx.http,
+                serenity::CreateInteractionResponse::Message(
+                    serenity::CreateInteractionResponseMessage::new()
+                        .content(format!(
+                            "Refresh on cooldown, try again in {remaining_secs}s.",
+                        ))
+                        .ephemeral(true),
+                ),
+            )
+            .await
+            .context("Failed to send refresh cooldown response")?;
+        return Ok(());
+    }
 
     interaction
         .create_response(&ctx.http, serenity::CreateInteractionResponse::Acknowledge)
@@ -541,6 +609,7 @@ pub async fn handle_refresh_button(
         .await
         .context("Failed to edit refreshed announcement")?;
 
+    throttle.record(game_id);
     info!("Refresh completed");
 
     Ok(())

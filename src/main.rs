@@ -86,7 +86,13 @@ async fn handle_event(
             .custom_id
             .starts_with(poller::REFRESH_BUTTON_PREFIX)
     {
-        poller::handle_refresh_button(ctx, component, &data.opencritic_client).await?;
+        poller::handle_refresh_button(
+            ctx,
+            component,
+            &data.opencritic_client,
+            &data.refresh_throttle,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -104,6 +110,7 @@ async fn initialize_bot_data(
     let db = db::connect_and_migrate(&config.database_url).await?;
     let opencritic_client = OpenCriticClient::new(config.rapidapi_key.clone());
     let last_poll = Arc::new(Mutex::new(None));
+    let refresh_throttle = Arc::new(poller::RefreshThrottle::new(config.refresh_cooldown));
 
     if config.disable_polling {
         info!("JEFF_DISABLE_POLLING is true; background poller will not be started");
@@ -125,5 +132,6 @@ async fn initialize_bot_data(
         opencritic_client,
         started_at: Utc::now(),
         last_poll,
+        refresh_throttle,
     })
 }

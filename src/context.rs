@@ -1,4 +1,7 @@
-use crate::{opencritic::OpenCriticClient, poller::LastPollSnapshot};
+use crate::{
+    opencritic::OpenCriticClient,
+    poller::{LastPollSnapshot, RefreshThrottle},
+};
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use std::sync::{Arc, Mutex};
@@ -8,6 +11,7 @@ pub struct Data {
     pub opencritic_client: OpenCriticClient,
     pub started_at: DateTime<Utc>,
     pub last_poll: Arc<Mutex<Option<LastPollSnapshot>>>,
+    pub refresh_throttle: Arc<RefreshThrottle>,
 }
 
 pub type Error = anyhow::Error;

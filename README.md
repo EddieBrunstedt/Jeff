@@ -29,6 +29,7 @@ LOG_FORMAT=json
 RUST_LOG=info,jeff=debug,serenity=warn,sqlx=warn
 JEFF_ENABLE_DEBUG_POST=false
 JEFF_DISABLE_POLLING=false
+JEFF_REFRESH_COOLDOWN_SECONDS=60
 ```
 
 `LOG_FORMAT` accepts `json` (default — one structured object per line, suitable
@@ -42,6 +43,8 @@ Set `jeff=trace` to also dump raw HTTP response bodies.
 `JEFF_ENABLE_DEBUG_POST=true` registers the `/jeff debug_post` subcommand. It posts three bundled fixture games to the current channel so the alert layout can be iterated on without consuming RapidAPI quota.
 
 `JEFF_DISABLE_POLLING=true` skips spawning the background OpenCritic poller. Useful during local development so restarts don't burn RapidAPI quota on automatic scans. Slash commands and the Refresh button still work.
+
+`JEFF_REFRESH_COOLDOWN_SECONDS` is the minimum number of seconds between successful Refresh-button presses on the same announcement. Default `60`. Set to `0` to disable. Tracked in-memory per game, resets on bot restart.
 
 ## Build and run
 

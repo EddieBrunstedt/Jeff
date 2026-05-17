@@ -30,6 +30,7 @@ pub struct Config {
     pub opencritic_poll_interval: Duration,
     pub enable_debug_post: bool,
     pub disable_polling: bool,
+    pub refresh_cooldown: Duration,
 }
 
 impl Config {
@@ -63,6 +64,11 @@ impl Config {
             .parse()
             .context("JEFF_DISABLE_POLLING must be a valid boolean")?;
 
+        let refresh_cooldown_seconds: u64 = std::env::var("JEFF_REFRESH_COOLDOWN_SECONDS")
+            .unwrap_or_else(|_| "60".to_string())
+            .parse()
+            .context("JEFF_REFRESH_COOLDOWN_SECONDS must be a non-negative integer")?;
+
         Ok(Config {
             discord_token,
             guild_id,
@@ -72,6 +78,7 @@ impl Config {
             opencritic_poll_interval: Duration::from_secs(opencritic_poll_interval_seconds),
             enable_debug_post,
             disable_polling,
+            refresh_cooldown: Duration::from_secs(refresh_cooldown_seconds),
         })
     }
 }
