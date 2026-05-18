@@ -117,7 +117,7 @@ pub async fn run_poll_cycle(
         let span = info_span!(
             "announce_game",
             game_id = game.id,
-            name = %game.name,
+            game_name = %game.name,
             score = game.top_critic_score,
             tier = %game.tier,
         );
