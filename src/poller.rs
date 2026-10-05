@@ -240,7 +240,7 @@ pub async fn send_opencritic_announcement(
     http: &serenity::Http,
     channel_id: serenity::ChannelId,
     game: &OpenCriticGame,
-) -> std::result::Result<serenity::Message, serenity::Error> {
+) -> std::result::Result<serenity::Message, Box<serenity::Error>> {
     let mut message = serenity::CreateMessage::new()
         .content(format_opencritic_announcement(game))
         .flags(serenity::MessageFlags::SUPPRESS_EMBEDS);
@@ -262,7 +262,10 @@ pub async fn send_opencritic_announcement(
         }
     }
 
-    channel_id.send_message(http, message).await
+    channel_id
+        .send_message(http, message)
+        .await
+        .map_err(Box::new)
 }
 
 pub fn spawn_opencritic_background_poll(
