@@ -91,8 +91,7 @@ pub async fn threshold(
 
     let new_min_reviews = min_reviews.unwrap_or(existing.min_reviews);
 
-    if (score - existing.threshold).abs() < f64::EPSILON
-        && new_min_reviews == existing.min_reviews
+    if (score - existing.threshold).abs() < f64::EPSILON && new_min_reviews == existing.min_reviews
     {
         ctx.say(format!(
             "Threshold is already {:.1} with {} minimum reviews. No change.",
@@ -104,8 +103,7 @@ pub async fn threshold(
 
     ctx.defer().await?;
 
-    let updated =
-        update_opencritic_subscription_settings(&data.db, score, new_min_reviews).await?;
+    let updated = update_opencritic_subscription_settings(&data.db, score, new_min_reviews).await?;
     if !updated {
         ctx.say("Subscription disappeared before the update could complete.")
             .await?;
